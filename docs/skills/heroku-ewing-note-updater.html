@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Ewing Note Updater — Takeoff Monkey Skill</title>
+  <meta name="skill-id" content="heroku-ewing-note-updater" />
+  <meta name="skill-platform" content="Heroku" />
+  <meta name="skill-status" content="Live" />
+  <meta name="skill-owner" content="Tommy Lather" />
+  <meta name="skill-tags" content="slack,heroku,google-docs,notes,thread,job-number,gas" />
+  <style>
+    body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 780px; margin: 2rem auto; padding: 0 1rem; color: #1f2328; line-height: 1.55; }
+    h1 { border-bottom: 1px solid #d0d7de; padding-bottom: .3rem; }
+    h2 { margin-top: 1.8rem; }
+    .meta { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; padding: .8rem 1rem; font-size: .92rem; }
+    .meta dt { font-weight: 600; float: left; clear: left; width: 9rem; }
+    .meta dd { margin-left: 9rem; }
+    .status-live { color: #1a7f37; font-weight: 600; }
+    code { background: #f6f8fa; padding: .1rem .3rem; border-radius: 3px; font-size: .9em; }
+    ul { padding-left: 1.2rem; }
+    .summary { font-size: 1.05rem; color: #424a53; }
+    a { color: #0969da; }
+  </style>
+</head>
+<body>
+  <h1>Ewing Note Updater</h1>
+  <p class="summary">Slack bot that appends specific Slack thread messages to a job's Google Doc instructions when triggered by a job number in the form <code>#12345!</code>.</p>
+
+  <dl class="meta">
+    <dt>Status</dt><dd class="status-live">Live</dd>
+    <dt>Platform</dt><dd>Heroku, Slack</dd>
+    <dt>Owner</dt><dd>Tommy Lather</dd>
+    <dt>Language/Runtime</dt><dd>Python 3.13, Google Apps Script</dd>
+    <dt>Dependencies</dt><dd>Monday API, Google Sheets, Google Drive, Google Docs, Google Apps Script</dd>
+    <dt>Guide</dt><dd><a href="https://takeoffmonkey.monday.com/protected_static/8540396/resources/2473010511/Slack_Note_Updater_Guide_v1b.pdf">Slack Note Updater Guide v1b</a></dd>
+    <dt>Repo</dt><dd><a href="https://github.com/Takeoff-Monkey/slack_note_updater">Takeoff-Monkey/slack_note_updater</a></dd>
+    <dt>App link</dt><dd>—</dd>
+  </dl>
+
+  <h2>What it does</h2>
+  <p>The bot listens to Slack channels it has been invited to. When a message contains a job number in the canonical format <code>#12345!</code> (hash, five digits, exclamation), the bot:</p>
+  <ul>
+    <li>Validates the job number against the production Google Sheet</li>
+    <li>Finds the matching Google Doc by searching Drive for a doc whose name contains <code>12345 |</code></li>
+    <li>Acknowledges the thread (":white_check_mark: Got it!")</li>
+    <li>Appends the full thread's messages (user, time, text) to the bottom of the doc</li>
+    <li>Keeps listening to subsequent replies in that thread, appending each one</li>
+    <li>Inserts inline images via a Google Apps Script webhook, and adds file/permalink attachments as clickable links</li>
+  </ul>
+
+  <h2>How to trigger / use</h2>
+  <ul>
+    <li>In a Slack channel where the bot is invited, start a thread with a message containing <code>#12345!</code> (exactly: hash, five digits, exclamation, no spaces)</li>
+    <li>Reply in that thread to append more notes. Each reply is logged with author + timestamp</li>
+    <li>Attach images directly in replies — they're pushed inline to the doc via GAS</li>
+    <li>Attach files (PDFs, etc.) and they're inserted as a clickable link line</li>
+  </ul>
+
+  <h2>Verify success</h2>
+  <ul>
+    <li>Bot responds with ":white_check_mark: Got it! Logging to job #12345."</li>
+    <li>Open the job's Google Doc — thread text appears at the bottom with author + HH:MM timestamp</li>
+    <li>Images appear inline in the doc; non-image files appear as ":paperclip: Attachment: [name](link)"</li>
+  </ul>
+
+  <h2>Common failure modes</h2>
+  <ul>
+    <li>":warning: Job #12345 not found in records." — job number is not in the master Google Sheet (column A)</li>
+    <li>":warning: No Google Doc found for job #12345!" — sheet has the job, but no Drive doc whose name contains <code>12345 |</code></li>
+    <li>":warning: sorry, I can't process that image..." — GAS webhook failed; usually a transient GAS quota or auth issue</li>
+    <li>Bot silent — bot not invited to the channel, or job-number format is wrong (e.g., missing the <code>!</code>, extra spaces, or fewer/more than 5 digits)</li>
+    <li>Edits to a message don't count — the bot only sees new message events</li>
+  </ul>
+
+  <h2>What to collect before escalating</h2>
+  <ul>
+    <li>Slack channel + permalink to the thread</li>
+    <li>Job number used and exact message that triggered (or failed to trigger) the bot</li>
+    <li>Expected Google Doc name / link if known</li>
+    <li>Screenshot of bot's warning emoji response (if any)</li>
+    <li>Heroku log timestamp if you have access</li>
+  </ul>
+  <p>Escalate to: <strong>Tommy</strong>.</p>
+</body>
+</html>

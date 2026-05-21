@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>WLIII Gmail — Email received creates item in Inbox — Takeoff Monkey Skill</title>
+  <meta name="skill-id" content="wliii-gmail-email-received-create-inbox" />
+  <meta name="skill-platform" content="Monday — Work Log III (active automation)" />
+  <meta name="skill-status" content="Live" />
+  <meta name="skill-owner" content="Leah Papageorgiou" />
+  <meta name="skill-tags" content="monday,worklog-iii,gmail,inbox,email,item-create" />
+  <meta name="automation-id" content="368133719" />
+  <style>
+    body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 780px; margin: 2rem auto; padding: 0 1rem; color: #1f2328; line-height: 1.55; }
+    h1 { border-bottom: 1px solid #d0d7de; padding-bottom: .3rem; }
+    h2 { margin-top: 1.8rem; }
+    .meta { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; padding: .8rem 1rem; font-size: .92rem; }
+    .meta dt { font-weight: 600; float: left; clear: left; width: 9rem; }
+    .meta dd { margin-left: 9rem; }
+    .status-live { color: #1a7f37; font-weight: 600; }
+    code { background: #f6f8fa; padding: .1rem .3rem; border-radius: 3px; font-size: .9em; }
+    ul { padding-left: 1.2rem; }
+    .summary { font-size: 1.05rem; color: #424a53; }
+    a { color: #0969da; }
+  </style>
+</head>
+<body>
+  <h1>WLIII Gmail — Email received creates item in Inbox</h1>
+  <p class="summary">Work Log III active Gmail automation: when an email is received, create an item in the Inbox group.</p>
+
+  <dl class="meta">
+    <dt>Status</dt><dd class="status-live">Live</dd>
+    <dt>Platform</dt><dd>Monday — Work Log III (active automation)</dd>
+    <dt>Owner</dt><dd>Leah Papageorgiou</dd>
+    <dt>Automation ID</dt><dd>368133719</dd>
+    <dt>Last updated</dt><dd>Oct 21, 2025, 3:48 PM</dd>
+    <dt>Language/Runtime</dt><dd>—</dd>
+    <dt>Dependencies</dt><dd>Gmail, Monday</dd>
+    <dt>Guide</dt><dd>—</dd>
+    <dt>Repo</dt><dd>—</dd>
+    <dt>App link</dt><dd>—</dd>
+  </dl>
+
+  <h2>What it does</h2>
+  <p>Configured on Work Log III: when an email arrives at the connected Gmail address, a new item is created in the Inbox group on Work Log III.</p>
+
+  <h2>Common failure modes</h2>
+  <ul>
+    <li>Permissions on Gmail integration (token disconnected / re-auth required).</li>
+    <li>Renamed Inbox group on the board.</li>
+    <li>Email filtered to spam or blocked before reaching the connector.</li>
+  </ul>
+
+  <h2>What to collect before escalating</h2>
+  <ul>
+    <li>Sender + subject + timestamp of the email that did not create an item.</li>
+    <li>Whether the email reached the inbox (vs. spam/junk).</li>
+    <li>Item link + item ID if an item was created partially.</li>
+  </ul>
+  <p>Escalate to: <strong>Tommy</strong>.</p>
+</body>
+</html>

@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Time tracking (WLIII) — Takeoff Monkey Skill</title>
+  <meta name="skill-id" content="monday-internal-time-tracking" />
+  <meta name="skill-platform" content="Monday — Work Log III (built-in)" />
+  <meta name="skill-status" content="Live" />
+  <meta name="skill-owner" content="—" />
+  <meta name="skill-tags" content="monday,worklog-iii,time-tracking,productivity,billing,internal" />
+  <style>
+    body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 780px; margin: 2rem auto; padding: 0 1rem; color: #1f2328; line-height: 1.55; }
+    h1 { border-bottom: 1px solid #d0d7de; padding-bottom: .3rem; }
+    h2 { margin-top: 1.8rem; }
+    .meta { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; padding: .8rem 1rem; font-size: .92rem; }
+    .meta dt { font-weight: 600; float: left; clear: left; width: 9rem; }
+    .meta dd { margin-left: 9rem; }
+    .status-live { color: #1a7f37; font-weight: 600; }
+    code { background: #f6f8fa; padding: .1rem .3rem; border-radius: 3px; font-size: .9em; }
+    ul { padding-left: 1.2rem; }
+    .summary { font-size: 1.05rem; color: #424a53; }
+    a { color: #0969da; }
+  </style>
+</head>
+<body>
+  <h1>Time tracking</h1>
+  <p class="summary">Built-in Monday automation: time tracking columns record work durations on Work Log III items; used for productivity and billing analytics.</p>
+
+  <dl class="meta">
+    <dt>Status</dt><dd class="status-live">Live</dd>
+    <dt>Platform</dt><dd>Monday — Work Log III (built-in)</dd>
+    <dt>Owner</dt><dd>—</dd>
+    <dt>Language/Runtime</dt><dd>—</dd>
+    <dt>Dependencies</dt><dd>—</dd>
+    <dt>Guide</dt><dd>—</dd>
+    <dt>Repo</dt><dd>—</dd>
+    <dt>App link</dt><dd>—</dd>
+  </dl>
+
+  <h2>What it does</h2>
+  <p>Time tracking columns record work durations as users move items through the production workflow. Totals feed productivity reporting and billing analytics.</p>
+
+  <h2>How to trigger / use</h2>
+  <ul>
+    <li>Time tracking starts / stops as configured against status transitions (timers fire on the workflow steps wired to the automation).</li>
+  </ul>
+
+  <h2>Verify success</h2>
+  <ul>
+    <li>Timers start/stop as expected.</li>
+    <li>Totals roll up to reporting.</li>
+  </ul>
+
+  <h2>Common failure modes</h2>
+  <ul>
+    <li>Users don't have permissions.</li>
+    <li>Column changed.</li>
+    <li>Automation not applied to subitems.</li>
+  </ul>
+
+  <h2>What to collect before escalating</h2>
+  <ul>
+    <li>Item link + item ID.</li>
+    <li>Which status change should have started / stopped tracking.</li>
+    <li>Screenshot of the time tracking column showing current state.</li>
+  </ul>
+  <p>Escalate to: <strong>Tommy</strong>.</p>
+</body>
+</html>

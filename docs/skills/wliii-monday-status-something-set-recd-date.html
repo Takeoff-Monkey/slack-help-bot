@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>WLIII: When status changes to something, set Rec'd Date to today (Auto Rec'vd Date) — Takeoff Monkey Skill</title>
+  <meta name="skill-id" content="wliii-monday-status-something-set-recd-date" />
+  <meta name="skill-platform" content="Monday — Work Log III (active automation)" />
+  <meta name="skill-status" content="Live" />
+  <meta name="skill-owner" content="Tommy Lather" />
+  <meta name="skill-tags" content="monday,wliii,status-change,status,recd-date,date,auto-date" />
+  <meta name="automation-id" content="159116647" />
+  <meta name="last-updated" content="Jan 29, 2023, 1:02 PM" />
+  <style>
+    body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 780px; margin: 2rem auto; padding: 0 1rem; color: #1f2328; line-height: 1.55; }
+    h1 { border-bottom: 1px solid #d0d7de; padding-bottom: .3rem; }
+    h2 { margin-top: 1.8rem; }
+    .meta { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; padding: .8rem 1rem; font-size: .92rem; }
+    .meta dt { font-weight: 600; float: left; clear: left; width: 9rem; }
+    .meta dd { margin-left: 9rem; }
+    .status-live { color: #1a7f37; font-weight: 600; }
+    code { background: #f6f8fa; padding: .1rem .3rem; border-radius: 3px; font-size: .9em; }
+    ul { padding-left: 1.2rem; }
+    .summary { font-size: 1.05rem; color: #424a53; }
+    a { color: #0969da; }
+  </style>
+</head>
+<body>
+  <h1>WLIII: When status changes to something, set Rec'd Date to today (Auto Rec'vd Date)</h1>
+  <p class="summary">Monday native automation on Work Log III: when an item's <code>Status</code> changes to the configured value, the <code>Rec'd Date</code> column is automatically set to today's date.</p>
+
+  <dl class="meta">
+    <dt>Status</dt><dd class="status-live">Live</dd>
+    <dt>Platform</dt><dd>Monday — Work Log III (active automation)</dd>
+    <dt>Owner</dt><dd>Tommy Lather</dd>
+    <dt>Automation ID</dt><dd><code>159116647</code></dd>
+    <dt>Last updated</dt><dd>Jan 29, 2023, 1:02 PM</dd>
+    <dt>Board</dt><dd>Work Log III (3874058084)</dd>
+  </dl>
+
+  <h2>What it does</h2>
+  <p>Native Monday automation (a.k.a. <em>Auto Rec'vd Date</em>). When the <code>Status</code> column changes to the trigger value configured in Monday, the item's <code>Rec'd Date</code> column is set to today's date.</p>
+
+  <h2>How to trigger / use</h2>
+  <ul>
+    <li>Change an item's <code>Status</code> column to the value configured as the trigger.</li>
+  </ul>
+
+  <h2>Verify success</h2>
+  <ul>
+    <li>The item's <code>Rec'd Date</code> column shows today's date immediately after the status change.</li>
+  </ul>
+
+  <h2>Common failure modes</h2>
+  <ul>
+    <li>Permissions, renamed columns/status labels, etc.</li>
+  </ul>
+
+  <h2>What to collect before escalating</h2>
+  <ul>
+    <li>Item link + item ID + timestamp + screenshots of relevant columns.</li>
+  </ul>
+  <p>Escalate to: <strong>Tommy</strong>.</p>
+</body>
+</html>

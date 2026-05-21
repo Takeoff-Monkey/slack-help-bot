@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>MTO Processor Assignment — Takeoff Monkey Skill</title>
+  <meta name="skill-id" content="zapier-mto-processor-assignment" />
+  <meta name="skill-platform" content="Zapier" />
+  <meta name="skill-status" content="Live" />
+  <meta name="skill-owner" content="Tommy Lather" />
+  <meta name="skill-tags" content="zapier,monday,assignment,mto,routing" />
+  <style>
+    body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 780px; margin: 2rem auto; padding: 0 1rem; color: #1f2328; line-height: 1.55; }
+    h1 { border-bottom: 1px solid #d0d7de; padding-bottom: .3rem; }
+    h2 { margin-top: 1.8rem; }
+    .meta { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; padding: .8rem 1rem; font-size: .92rem; }
+    .meta dt { font-weight: 600; float: left; clear: left; width: 9rem; }
+    .meta dd { margin-left: 9rem; }
+    .status-live { color: #1a7f37; font-weight: 600; }
+    code { background: #f6f8fa; padding: .1rem .3rem; border-radius: 3px; font-size: .9em; }
+    ul { padding-left: 1.2rem; }
+    .summary { font-size: 1.05rem; color: #424a53; }
+    a { color: #0969da; }
+  </style>
+</head>
+<body>
+  <h1>MTO Processor Assignment</h1>
+  <p class="summary">Zapier automation that automatically assigns the appropriate reviewer to an MTO based on client, branch, and product type.</p>
+
+  <dl class="meta">
+    <dt>Status</dt><dd class="status-live">Live</dd>
+    <dt>Platform</dt><dd>Zapier</dd>
+    <dt>Owner</dt><dd>Tommy Lather</dd>
+    <dt>Language/Runtime</dt><dd>—</dd>
+    <dt>Dependencies</dt><dd>Zapier</dd>
+    <dt>Guide</dt><dd>—</dd>
+    <dt>Repo</dt><dd>—</dd>
+    <dt>App link</dt><dd>—</dd>
+  </dl>
+
+  <h2>What it does</h2>
+  <p>When an MTO is created/updated in Monday, this Zap inspects the client, branch, and product type and assigns the correct processor/reviewer to the item so it routes to the right person without manual triage.</p>
+
+  <h2>How to trigger / use</h2>
+  <ul>
+    <li>Runs automatically against Monday MTO items — no manual trigger required</li>
+    <li>Ensure client, branch, and product type fields are populated on the item</li>
+  </ul>
+
+  <h2>Verify success</h2>
+  <ul>
+    <li>Reviewer/assignee field on the Monday item is set to the expected person</li>
+    <li>Assignment matches the routing rules defined for that client/branch/product</li>
+  </ul>
+
+  <h2>Common failure modes</h2>
+  <ul>
+    <li>Missing or mistyped client/branch/product values</li>
+    <li>Routing rule not configured for a new client or product type</li>
+    <li>Zapier task error / API throttle</li>
+  </ul>
+
+  <h2>What to collect before escalating</h2>
+  <ul>
+    <li>Item link + item ID</li>
+    <li>Client, branch, and product type values on the item</li>
+    <li>Expected vs actual assignee</li>
+    <li>Timestamp</li>
+  </ul>
+  <p>Escalate to: <strong>Tommy</strong>.</p>
+</body>
+</html>

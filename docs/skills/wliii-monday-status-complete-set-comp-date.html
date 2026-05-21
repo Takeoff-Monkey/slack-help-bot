@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>WLIII: When Status changes to Complete, set Comp. Date to today (Auto Comp. Date) — Takeoff Monkey Skill</title>
+  <meta name="skill-id" content="wliii-monday-status-complete-set-comp-date" />
+  <meta name="skill-platform" content="Monday — Work Log III (active automation)" />
+  <meta name="skill-status" content="Live" />
+  <meta name="skill-owner" content="Tommy Lather" />
+  <meta name="skill-tags" content="monday,wliii,status-change,status,comp-date,date,complete,auto-date" />
+  <meta name="automation-id" content="159116751" />
+  <meta name="last-updated" content="Apr 3, 2024, 5:18 AM" />
+  <style>
+    body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 780px; margin: 2rem auto; padding: 0 1rem; color: #1f2328; line-height: 1.55; }
+    h1 { border-bottom: 1px solid #d0d7de; padding-bottom: .3rem; }
+    h2 { margin-top: 1.8rem; }
+    .meta { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; padding: .8rem 1rem; font-size: .92rem; }
+    .meta dt { font-weight: 600; float: left; clear: left; width: 9rem; }
+    .meta dd { margin-left: 9rem; }
+    .status-live { color: #1a7f37; font-weight: 600; }
+    code { background: #f6f8fa; padding: .1rem .3rem; border-radius: 3px; font-size: .9em; }
+    ul { padding-left: 1.2rem; }
+    .summary { font-size: 1.05rem; color: #424a53; }
+    a { color: #0969da; }
+  </style>
+</head>
+<body>
+  <h1>WLIII: When Status changes to Complete, set Comp. Date to today (Auto Comp. Date)</h1>
+  <p class="summary">Monday native automation on Work Log III: when an item's <code>Status</code> changes to <code>Complete</code>, the <code>Comp. Date</code> column is automatically set to today's date.</p>
+
+  <dl class="meta">
+    <dt>Status</dt><dd class="status-live">Live</dd>
+    <dt>Platform</dt><dd>Monday — Work Log III (active automation)</dd>
+    <dt>Owner</dt><dd>Tommy Lather</dd>
+    <dt>Automation ID</dt><dd><code>159116751</code></dd>
+    <dt>Last updated</dt><dd>Apr 3, 2024, 5:18 AM</dd>
+    <dt>Board</dt><dd>Work Log III (3874058084)</dd>
+  </dl>
+
+  <h2>What it does</h2>
+  <p>Native Monday automation (a.k.a. <em>Auto Comp. Date</em>). When <code>Status</code> on an item is set to <code>Complete</code>, Monday writes today's date into the <code>Comp. Date</code> column.</p>
+
+  <h2>How to trigger / use</h2>
+  <ul>
+    <li>Change an item's <code>Status</code> column to <code>Complete</code>.</li>
+  </ul>
+
+  <h2>Verify success</h2>
+  <ul>
+    <li>The item's <code>Comp. Date</code> column shows today's date immediately after the status change.</li>
+  </ul>
+
+  <h2>Common failure modes</h2>
+  <ul>
+    <li>Permissions, renamed columns/status labels, etc.</li>
+  </ul>
+
+  <h2>What to collect before escalating</h2>
+  <ul>
+    <li>Item link + item ID + timestamp + screenshots of relevant columns.</li>
+  </ul>
+  <p>Escalate to: <strong>Tommy</strong>.</p>
+</body>
+</html>

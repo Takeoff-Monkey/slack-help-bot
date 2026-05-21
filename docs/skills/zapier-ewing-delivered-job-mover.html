@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Ewing Delivered Job Mover — Takeoff Monkey Skill</title>
+  <meta name="skill-id" content="zapier-ewing-delivered-job-mover" />
+  <meta name="skill-platform" content="Zapier" />
+  <meta name="skill-status" content="Live" />
+  <meta name="skill-owner" content="Tommy Lather" />
+  <meta name="skill-tags" content="zapier,google-sheets,ewing,delivered,backup" />
+  <style>
+    body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 780px; margin: 2rem auto; padding: 0 1rem; color: #1f2328; line-height: 1.55; }
+    h1 { border-bottom: 1px solid #d0d7de; padding-bottom: .3rem; }
+    h2 { margin-top: 1.8rem; }
+    .meta { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; padding: .8rem 1rem; font-size: .92rem; }
+    .meta dt { font-weight: 600; float: left; clear: left; width: 9rem; }
+    .meta dd { margin-left: 9rem; }
+    .status-live { color: #1a7f37; font-weight: 600; }
+    code { background: #f6f8fa; padding: .1rem .3rem; border-radius: 3px; font-size: .9em; }
+    ul { padding-left: 1.2rem; }
+    .summary { font-size: 1.05rem; color: #424a53; }
+    a { color: #0969da; }
+  </style>
+</head>
+<body>
+  <h1>Ewing Delivered Job Mover</h1>
+  <p class="summary">Zapier automation that pushes a job row from the 'Active' tab to the 'Delivered' tab on the back-up Google Sheet once it's delivered.</p>
+
+  <dl class="meta">
+    <dt>Status</dt><dd class="status-live">Live</dd>
+    <dt>Platform</dt><dd>Zapier</dd>
+    <dt>Owner</dt><dd>Tommy Lather</dd>
+    <dt>Language/Runtime</dt><dd>—</dd>
+    <dt>Dependencies</dt><dd>Zapier, Google Sheets</dd>
+    <dt>Guide</dt><dd>—</dd>
+    <dt>Repo</dt><dd>—</dd>
+    <dt>App link</dt><dd>—</dd>
+  </dl>
+
+  <h2>What it does</h2>
+  <p>When an Ewing job is marked delivered, this Zap moves the corresponding row from the 'Active' tab on the back-up Google Sheet to the 'Delivered' tab so the active list reflects only in-flight work.</p>
+
+  <h2>How to trigger / use</h2>
+  <ul>
+    <li>Triggered when an Ewing job transitions to delivered (typically a Monday status change)</li>
+    <li>No manual trigger needed</li>
+  </ul>
+
+  <h2>Verify success</h2>
+  <ul>
+    <li>Row removed from the 'Active' tab</li>
+    <li>Same row appears on the 'Delivered' tab with delivered timestamp / date</li>
+  </ul>
+
+  <h2>Common failure modes</h2>
+  <ul>
+    <li>Job row missing or has a different key (job number mismatch)</li>
+    <li>Sheet tab renamed</li>
+    <li>Google Sheets auth lapsed in Zapier</li>
+  </ul>
+
+  <h2>What to collect before escalating</h2>
+  <ul>
+    <li>Job number + Monday item link</li>
+    <li>Sheet link + tab names</li>
+    <li>Timestamp the job was marked delivered</li>
+  </ul>
+  <p>Escalate to: <strong>Tommy</strong>.</p>
+</body>
+</html>

@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Projects Inbox → Monday Loader — Takeoff Monkey Skill</title>
+  <meta name="skill-id" content="zapier-projects-inbox-monday-loader" />
+  <meta name="skill-platform" content="Zapier" />
+  <meta name="skill-status" content="Live" />
+  <meta name="skill-owner" content="Tommy Lather" />
+  <meta name="skill-tags" content="zapier,gmail,monday,inbox,email-loader,wliii" />
+  <style>
+    body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 780px; margin: 2rem auto; padding: 0 1rem; color: #1f2328; line-height: 1.55; }
+    h1 { border-bottom: 1px solid #d0d7de; padding-bottom: .3rem; }
+    h2 { margin-top: 1.8rem; }
+    .meta { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; padding: .8rem 1rem; font-size: .92rem; }
+    .meta dt { font-weight: 600; float: left; clear: left; width: 9rem; }
+    .meta dd { margin-left: 9rem; }
+    .status-live { color: #1a7f37; font-weight: 600; }
+    code { background: #f6f8fa; padding: .1rem .3rem; border-radius: 3px; font-size: .9em; }
+    ul { padding-left: 1.2rem; }
+    .summary { font-size: 1.05rem; color: #424a53; }
+    a { color: #0969da; }
+  </style>
+</head>
+<body>
+  <h1>Projects Inbox → Monday Loader</h1>
+  <p class="summary">Zapier automation that creates items in Monday Work Log III from emails sent to projects@takeoffmonkey.com.</p>
+
+  <dl class="meta">
+    <dt>Status</dt><dd class="status-live">Live</dd>
+    <dt>Platform</dt><dd>Zapier</dd>
+    <dt>Owner</dt><dd>Tommy Lather</dd>
+    <dt>Language/Runtime</dt><dd>—</dd>
+    <dt>Dependencies</dt><dd>Gmail, Zapier, Monday</dd>
+    <dt>Guide</dt><dd>—</dd>
+    <dt>Repo</dt><dd>—</dd>
+    <dt>App link</dt><dd>—</dd>
+  </dl>
+
+  <h2>What it does</h2>
+  <p>A new inbound request arrives at projects@takeoffmonkey.com (or via the projects form). The Zap parses the email and automatically converts it into a Monday item on Work Log III, populating sender and any included files/links.</p>
+
+  <h2>How to trigger / use</h2>
+  <ul>
+    <li>Send an email (or have a client send one) to <code>projects@takeoffmonkey.com</code></li>
+    <li>Attachments and links should travel with the email so the resulting item is complete</li>
+  </ul>
+
+  <h2>Verify success</h2>
+  <ul>
+    <li>New item appears in the correct group/board (Work Log III) within a minute or two</li>
+    <li>Sender + files/links are populated on the item</li>
+  </ul>
+
+  <h2>Common failure modes</h2>
+  <ul>
+    <li>Malformed email (no subject, weird formatting from a client mail system)</li>
+    <li>Missing attachment or link the parser expected</li>
+    <li>Monday API throttling</li>
+    <li>Board/group mapping was changed and the Zap was not updated</li>
+  </ul>
+
+  <h2>What to collect before escalating</h2>
+  <ul>
+    <li>Original email subject + timestamp + sender</li>
+    <li>Expected board/group</li>
+    <li>Whether files were attached</li>
+    <li>Item ID if the item was partially created</li>
+  </ul>
+  <p>Escalate to: <strong>Tommy</strong>.</p>
+</body>
+</html>

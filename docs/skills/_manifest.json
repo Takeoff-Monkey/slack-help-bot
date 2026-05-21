@@ -1,0 +1,1953 @@
+{
+  "generated_at": "2026-05-20T16:21:44.753336+00:00",
+  "count": 100,
+  "by_platform": {
+    "AWS": 2,
+    "AWS Lambda": 17,
+    "Appwrite": 1,
+    "Chrome Extension": 1,
+    "GCP": 1,
+    "General": 2,
+    "Heroku": 9,
+    "Monday \u2014 Work Log III (active automation)": 41,
+    "Monday \u2014 Work Log III (built-in)": 4,
+    "Zapier": 22
+  },
+  "skills": [
+    {
+      "id": "appwrite-takeoff-monkey-widgets",
+      "file": "appwrite-takeoff-monkey-widgets.html",
+      "name": "Takeoff Monkey Widgets",
+      "title": "Takeoff Monkey Widgets",
+      "summary": "React-based widgets site hosted on GCP Cloud Run with Appwrite-backed functions and API.",
+      "platform": "Appwrite",
+      "status": "In Progress",
+      "owner": "Konur Papageorgiou",
+      "tags": [
+        "appwrite",
+        "react",
+        "javascript",
+        "gcp",
+        "cloud-run",
+        "gemini",
+        "aws",
+        "openai",
+        "widgets"
+      ]
+    },
+    {
+      "id": "aws-arazoza-db-worker",
+      "file": "aws-arazoza-db-worker.html",
+      "name": "prod-lambda-Arazoza-db-worker-2025-10-08",
+      "title": "prod-lambda-Arazoza-db-worker-2025-10-08",
+      "summary": "AWS Lambda worker that handles data manipulation and exporting for the Dropbox-to-DynamoDB workflow specifically for Arazoza.",
+      "platform": "AWS Lambda",
+      "status": "Live",
+      "owner": "Konur Papageorgiou",
+      "tags": [
+        "aws",
+        "lambda",
+        "python",
+        "dynamodb",
+        "dropbox",
+        "arazoza",
+        "worker"
+      ]
+    },
+    {
+      "id": "aws-bid-downloader-worker",
+      "file": "aws-bid-downloader-worker.html",
+      "name": "prod-lambda-Bid-Downloader-worker-2025-10-08",
+      "title": "prod-lambda-Bid-Downloader-worker-2025-10-08",
+      "summary": "AWS Lambda function (no description yet) associated with the Email-Scanner / bid downloader workflow.",
+      "platform": "AWS Lambda",
+      "status": "Live",
+      "owner": "Konur Papageorgiou",
+      "tags": [
+        "aws",
+        "lambda",
+        "bid",
+        "email-scanner",
+        "worker"
+      ]
+    },
+    {
+      "id": "aws-ctx-updater",
+      "file": "aws-ctx-updater.html",
+      "name": "prod-lambda-CTX-updater-2025-10-08",
+      "title": "prod-lambda-CTX-updater-2025-10-08",
+      "summary": "AWS Lambda function (no description yet) \u2014 CTX updater touching Monday and DynamoDB.",
+      "platform": "AWS Lambda",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "aws",
+        "lambda",
+        "python",
+        "monday",
+        "dynamodb",
+        "ctx"
+      ]
+    },
+    {
+      "id": "aws-default-db-worker",
+      "file": "aws-default-db-worker.html",
+      "name": "prod-lambda-default-db-worker-2025-10-08",
+      "title": "prod-lambda-default-db-worker-2025-10-08",
+      "summary": "AWS Lambda worker that handles data manipulation and exporting for the default Dropbox-to-DynamoDB workflow only.",
+      "platform": "AWS Lambda",
+      "status": "Live",
+      "owner": "Konur Papageorgiou",
+      "tags": [
+        "aws",
+        "lambda",
+        "python",
+        "dynamodb",
+        "dropbox",
+        "worker"
+      ]
+    },
+    {
+      "id": "aws-dropbox-db-import",
+      "file": "aws-dropbox-db-import.html",
+      "name": "prod-lambda-Dropbox-db-import-2025-10-08",
+      "title": "prod-lambda-Dropbox-db-import-2025-10-08",
+      "summary": "AWS Lambda function that runs the full workflow of importing Excel data from Dropbox into DynamoDB.",
+      "platform": "AWS Lambda",
+      "status": "Live",
+      "owner": "Konur Papageorgiou",
+      "tags": [
+        "aws",
+        "lambda",
+        "python",
+        "dynamodb",
+        "dropbox",
+        "excel",
+        "import"
+      ]
+    },
+    {
+      "id": "aws-everde-db-import",
+      "file": "aws-everde-db-import.html",
+      "name": "prod-lambda-Everde-db-import-2025-10-08",
+      "title": "prod-lambda-Everde-db-import-2025-10-08",
+      "summary": "AWS Lambda function that runs a specialized import flow from Everde into DynamoDB.",
+      "platform": "AWS Lambda",
+      "status": "Live",
+      "owner": "Konur Papageorgiou",
+      "tags": [
+        "aws",
+        "lambda",
+        "python",
+        "dynamodb",
+        "dropbox",
+        "everde",
+        "import"
+      ]
+    },
+    {
+      "id": "aws-extractor-pipeline-pdf",
+      "file": "aws-extractor-pipeline-pdf.html",
+      "name": "prod-lambda-Extractor-Pipeline-PDF-2025-10-08",
+      "title": "prod-lambda-Extractor-Pipeline-PDF-2025-10-08",
+      "summary": "AWS Lambda function that runs the CI/CD pipeline for the PDF schedule extractor (note: may be a deprecation candidate).",
+      "platform": "AWS Lambda",
+      "status": "Live",
+      "owner": "Konur Papageorgiou",
+      "tags": [
+        "aws",
+        "lambda",
+        "python",
+        "pdf",
+        "ci-cd",
+        "pipeline",
+        "extractor"
+      ]
+    },
+    {
+      "id": "aws-get-order-info",
+      "file": "aws-get-order-info.html",
+      "name": "prod-lambda-get-order-info-2025-10-08",
+      "title": "prod-lambda-get-order-info-2025-10-08",
+      "summary": "AWS Lambda function (no description yet) \u2014 handles get-order-info workflow over DynamoDB and Dropbox.",
+      "platform": "AWS Lambda",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "aws",
+        "lambda",
+        "python",
+        "dynamodb",
+        "dropbox",
+        "order-info"
+      ]
+    },
+    {
+      "id": "aws-gmail-to-neon-updater",
+      "file": "aws-gmail-to-neon-updater.html",
+      "name": "prod-lambda-Gmail-to-Neon-updater-2026-01-28",
+      "title": "prod-lambda-Gmail-to-Neon-updater-2026-01-28",
+      "summary": "AWS-hosted one-time manual data backport from the original DynamoDB into the new DynamoDB.",
+      "platform": "AWS",
+      "status": "Live",
+      "owner": "\u2014",
+      "tags": [
+        "aws",
+        "dynamodb",
+        "monday",
+        "gmail",
+        "neon",
+        "backport",
+        "one-time"
+      ]
+    },
+    {
+      "id": "aws-highlight-pipeline-pdf",
+      "file": "aws-highlight-pipeline-pdf.html",
+      "name": "prod-lambda-Highlight-Pipeline-PDF-2025-10-08",
+      "title": "prod-lambda-Highlight-Pipeline-PDF-2025-10-08",
+      "summary": "AWS Lambda function that runs the CI/CD pipeline for the PDF highlighter (note: may be a deprecation candidate).",
+      "platform": "AWS Lambda",
+      "status": "Live",
+      "owner": "Konur Papageorgiou",
+      "tags": [
+        "aws",
+        "lambda",
+        "python",
+        "pdf",
+        "ci-cd",
+        "pipeline",
+        "highlighter"
+      ]
+    },
+    {
+      "id": "aws-is-db-worker",
+      "file": "aws-is-db-worker.html",
+      "name": "prod-lambda-IS-db-worker-2025-10-08",
+      "title": "prod-lambda-IS-db-worker-2025-10-08",
+      "summary": "AWS Lambda worker that handles data manipulation and exporting for the Dropbox-to-DynamoDB workflow specifically for Irrigation Station.",
+      "platform": "AWS Lambda",
+      "status": "Live",
+      "owner": "Konur Papageorgiou",
+      "tags": [
+        "aws",
+        "lambda",
+        "python",
+        "dynamodb",
+        "dropbox",
+        "irrigation-station",
+        "worker"
+      ]
+    },
+    {
+      "id": "aws-itb-n8n-large-file-handler",
+      "file": "aws-itb-n8n-large-file-handler.html",
+      "name": "prod-lambda-itb-n8n-large-file-handler-2025-10-08",
+      "title": "prod-lambda-itb-n8n-large-file-handler-2025-10-08",
+      "summary": "AWS Lambda function (no description yet) supporting ITB / n8n large file handling.",
+      "platform": "AWS Lambda",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "aws",
+        "lambda",
+        "nodejs",
+        "n8n",
+        "itb"
+      ]
+    },
+    {
+      "id": "aws-scan-pipeline-pdf",
+      "file": "aws-scan-pipeline-pdf.html",
+      "name": "prod-lambda-Scan-Pipeline-PDF-2025-10-08",
+      "title": "prod-lambda-Scan-Pipeline-PDF-2025-10-08",
+      "summary": "AWS Lambda function that runs the CI/CD pipeline for the PDF scanner (note: may be a deprecation candidate).",
+      "platform": "AWS Lambda",
+      "status": "Live",
+      "owner": "Konur Papageorgiou",
+      "tags": [
+        "aws",
+        "lambda",
+        "python",
+        "pdf",
+        "ci-cd",
+        "pipeline",
+        "scanner"
+      ]
+    },
+    {
+      "id": "aws-test-database-import-1",
+      "file": "aws-test-database-import-1.html",
+      "name": "test-lambda-Database-Import-1-2025-10-08",
+      "title": "test-lambda-Database-Import-1-2025-10-08",
+      "summary": "AWS Lambda function that runs the full data import from Dropbox into DynamoDB \u2014 test workflow only, NOT production.",
+      "platform": "AWS Lambda",
+      "status": "Live",
+      "owner": "Konur Papageorgiou",
+      "tags": [
+        "aws",
+        "lambda",
+        "python",
+        "dynamodb",
+        "dropbox",
+        "test",
+        "import"
+      ]
+    },
+    {
+      "id": "aws-test-database-import-2",
+      "file": "aws-test-database-import-2.html",
+      "name": "test-lambda-Database-Import-2-2025-10-08",
+      "title": "test-lambda-Database-Import-2-2025-10-08",
+      "summary": "AWS Lambda function that runs the full data import from Dropbox into DynamoDB \u2014 test workflow only, NOT production.",
+      "platform": "AWS Lambda",
+      "status": "Live",
+      "owner": "Konur Papageorgiou",
+      "tags": [
+        "aws",
+        "lambda",
+        "python",
+        "dynamodb",
+        "dropbox",
+        "test",
+        "import"
+      ]
+    },
+    {
+      "id": "aws-test-database-import-3",
+      "file": "aws-test-database-import-3.html",
+      "name": "test-lambda-Database-Import-3-2025-10-08",
+      "title": "test-lambda-Database-Import-3-2025-10-08",
+      "summary": "AWS Lambda function that runs the full data import from Dropbox into DynamoDB \u2014 test workflow only, NOT production.",
+      "platform": "AWS Lambda",
+      "status": "Live",
+      "owner": "Konur Papageorgiou",
+      "tags": [
+        "aws",
+        "lambda",
+        "python",
+        "dynamodb",
+        "dropbox",
+        "test",
+        "import"
+      ]
+    },
+    {
+      "id": "aws-test-neon-updater",
+      "file": "aws-test-neon-updater.html",
+      "name": "test-Neon-updater-2026-01-20",
+      "title": "test-Neon-updater-2026-01-20",
+      "summary": "AWS-hosted job that runs on a cron schedule to automatically extract new bid emails and import them into Neon DB.",
+      "platform": "AWS",
+      "status": "Live",
+      "owner": "\u2014",
+      "tags": [
+        "aws",
+        "gmail",
+        "google-api",
+        "neon",
+        "cron",
+        "bid-emails"
+      ]
+    },
+    {
+      "id": "aws-worklog-iii-manual-refresh",
+      "file": "aws-worklog-iii-manual-refresh.html",
+      "name": "prod-lambda-Worklog-III-manual-refresh-2025-10-08",
+      "title": "prod-lambda-Worklog-III-manual-refresh-2025-10-08",
+      "summary": "AWS Lambda function (no description yet) \u2014 manual-refresh path for Worklog III over Monday and DynamoDB.",
+      "platform": "AWS Lambda",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "aws",
+        "lambda",
+        "python",
+        "monday",
+        "dynamodb",
+        "worklog",
+        "manual-refresh"
+      ]
+    },
+    {
+      "id": "aws-worklog-updater",
+      "file": "aws-worklog-updater.html",
+      "name": "prod-Worklog-updater-2025-10-08",
+      "title": "prod-Worklog-updater-2025-10-08",
+      "summary": "AWS Lambda function that updates the Worklog III DynamoDB table with Monday.com data.",
+      "platform": "AWS Lambda",
+      "status": "Live",
+      "owner": "Konur Papageorgiou, Tommy Lather",
+      "tags": [
+        "aws",
+        "lambda",
+        "python",
+        "monday",
+        "dynamodb",
+        "worklog"
+      ]
+    },
+    {
+      "id": "chrome-procore-worksheet-exporter",
+      "file": "chrome-procore-worksheet-exporter.html",
+      "name": "Procore Worksheet Exporter (Chrome Extension)",
+      "title": "Procore Worksheet Exporter",
+      "summary": "Adds an \"Export BOM\" button to Procore Estimating and downloads a clean CSV grouped by layer.",
+      "platform": "Chrome Extension",
+      "status": "Live",
+      "owner": "Tommy",
+      "tags": [
+        "chrome",
+        "extension",
+        "procore",
+        "bom",
+        "csv",
+        "worksheet",
+        "export"
+      ]
+    },
+    {
+      "id": "gcp-streamlit-widget-application",
+      "file": "gcp-streamlit-widget-application.html",
+      "name": "Streamlit Widget Application",
+      "title": "Streamlit Widget Application",
+      "summary": "Streamlit-based widgets hub hosted on GCP \u2014 the central interface for Takeoff Monkey internal widgets.",
+      "platform": "GCP",
+      "status": "Live",
+      "owner": "Konur Papageorgiou",
+      "tags": [
+        "gcp",
+        "streamlit",
+        "python",
+        "aws",
+        "openai",
+        "monday",
+        "widgets"
+      ]
+    },
+    {
+      "id": "general-escalation-procedure",
+      "file": "general-escalation-procedure.html",
+      "name": "Escalation Procedure",
+      "title": "Escalation Procedure",
+      "summary": "If an automation breaks, this is the information you need to collect before escalating so the fix can be fast.",
+      "platform": "General",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "escalation",
+        "support",
+        "procedure",
+        "troubleshooting"
+      ]
+    },
+    {
+      "id": "general-overview",
+      "file": "general-overview.html",
+      "name": "Automations, Apps & Widgets \u2014 How They Work",
+      "title": "Automations, Apps & Widgets \u2014 Overview",
+      "summary": "The living index of Takeoff Monkey's tech stack: automations, apps, widgets, and workflows.",
+      "platform": "General",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "overview",
+        "index",
+        "documentation"
+      ]
+    },
+    {
+      "id": "heroku-catalog-matcher",
+      "file": "heroku-catalog-matcher.html",
+      "name": "Catalog Matcher",
+      "title": "Catalog Matcher",
+      "summary": "Compares our material list against a customer's catalog and matches items appropriately.",
+      "platform": "Heroku",
+      "status": "Unknown",
+      "owner": "\u2014",
+      "tags": [
+        "heroku",
+        "catalog",
+        "materials",
+        "matching"
+      ]
+    },
+    {
+      "id": "heroku-datachimp",
+      "file": "heroku-datachimp.html",
+      "name": "DataChimp",
+      "title": "DataChimp",
+      "summary": "OpenAI + PandasAI Slack bot that answers questions about our worklog history and produces tables, charts, and analytics on demand.",
+      "platform": "Heroku",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "slack",
+        "heroku",
+        "openai",
+        "pandasai",
+        "dynamodb",
+        "analytics",
+        "worklog"
+      ]
+    },
+    {
+      "id": "heroku-duplicate-combinator",
+      "file": "heroku-duplicate-combinator.html",
+      "name": "Duplicate-Combinator",
+      "title": "Duplicate-Combinator",
+      "summary": "Periodically scans specific Monday.com boards and groups to detect items that represent the same project and reconciles / flags duplicates.",
+      "platform": "Heroku",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "heroku",
+        "monday",
+        "python",
+        "flask",
+        "duplicates",
+        "scanner"
+      ]
+    },
+    {
+      "id": "heroku-estimators-bid-notes",
+      "file": "heroku-estimators-bid-notes.html",
+      "name": "Estimator's Bid Notes",
+      "title": "Estimator's Bid Notes",
+      "summary": "Scans drawings, PDF takeoffs, and worksheets, then returns a 1\u20132 page summary of the job with the customer's scope-specific notes \u2014 saved to the project sales folder and emailed.",
+      "platform": "Heroku",
+      "status": "Unknown",
+      "owner": "\u2014",
+      "tags": [
+        "heroku",
+        "pdf",
+        "takeoff",
+        "worksheet",
+        "summary",
+        "email",
+        "bid-notes"
+      ]
+    },
+    {
+      "id": "heroku-ewing-auto-instructor",
+      "file": "heroku-ewing-auto-instructor.html",
+      "name": "Ewing Auto-Instructor",
+      "title": "Ewing Auto-Instructor",
+      "summary": "Background bot that automatically inserts branch, customer, regional, and sales-rep standard requirements into the job's instruction Google Doc.",
+      "platform": "Heroku",
+      "status": "In Progress",
+      "owner": "Tommy Lather",
+      "tags": [
+        "heroku",
+        "google-docs",
+        "google-drive",
+        "google-sheets",
+        "instructions",
+        "automation"
+      ]
+    },
+    {
+      "id": "heroku-ewing-design-right-sizer",
+      "file": "heroku-ewing-design-right-sizer.html",
+      "name": "Ewing Design Right-Sizer",
+      "title": "Ewing Design Right-Sizer",
+      "summary": "Slack bot that compresses PDF design files down to roughly 20\u201325 MB so they can be attached / emailed within size limits.",
+      "platform": "Heroku",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "slack",
+        "heroku",
+        "pdf",
+        "compression",
+        "design",
+        "flask"
+      ]
+    },
+    {
+      "id": "heroku-ewing-note-updater",
+      "file": "heroku-ewing-note-updater.html",
+      "name": "Ewing Note Updater",
+      "title": "Ewing Note Updater",
+      "summary": "Slack bot that appends specific Slack thread messages to a job's Google Doc instructions when triggered by a job number in the form #12345!.",
+      "platform": "Heroku",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "slack",
+        "heroku",
+        "google-docs",
+        "notes",
+        "thread",
+        "job-number",
+        "gas"
+      ]
+    },
+    {
+      "id": "heroku-ewing-revision-creator",
+      "file": "heroku-ewing-revision-creator.html",
+      "name": "Ewing Revision Creator",
+      "title": "Ewing Revision Creator",
+      "summary": "Slack bot that finds an existing completed job, creates a numbered revision item on Monday, and recycles the original Google Doc instructions \u2014 triggered by #revise! followed by the job number #12345!.",
+      "platform": "Heroku",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "slack",
+        "heroku",
+        "monday",
+        "google-docs",
+        "google-drive",
+        "revisions",
+        "job-number"
+      ]
+    },
+    {
+      "id": "heroku-question-relay",
+      "file": "heroku-question-relay.html",
+      "name": "Question Relay",
+      "title": "Question Relay",
+      "summary": "Slack bot that logs production-team questions to a Google Sheet, tracks the question being manually relayed to the client, and routes the client's response back to the original asker.",
+      "platform": "Heroku",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "slack",
+        "heroku",
+        "monday",
+        "google-sheets",
+        "questions",
+        "relay",
+        "client"
+      ]
+    },
+    {
+      "id": "monday-internal-build-folder",
+      "file": "monday-internal-build-folder.html",
+      "name": "Build Folder",
+      "title": "Build Folder (WLIII)",
+      "summary": "Built-in Monday trigger on Work Log III: when 'Build Folders' is set on an item, the folder creation process kicks off (downstream creates Drive/Dropbox folder structure for the job).",
+      "platform": "Monday \u2014 Work Log III (built-in)",
+      "status": "Live",
+      "owner": "\u2014",
+      "tags": [
+        "monday",
+        "worklog-iii",
+        "build-folder",
+        "google-drive",
+        "dropbox",
+        "folders",
+        "internal"
+      ]
+    },
+    {
+      "id": "monday-internal-move-to-active-group",
+      "file": "monday-internal-move-to-active-group.html",
+      "name": "Move to 'Active' Group",
+      "title": "Move to 'Active' Group (WLIII)",
+      "summary": "Built-in Monday automation: when a project (item) is marked 'Uploaded', the project is moved into the 'Active' group.",
+      "platform": "Monday \u2014 Work Log III (built-in)",
+      "status": "Live",
+      "owner": "\u2014",
+      "tags": [
+        "monday",
+        "worklog-iii",
+        "group-move",
+        "status",
+        "uploaded",
+        "active",
+        "internal"
+      ]
+    },
+    {
+      "id": "monday-internal-time-tracking",
+      "file": "monday-internal-time-tracking.html",
+      "name": "Time tracking",
+      "title": "Time tracking (WLIII)",
+      "summary": "Built-in Monday automation: time tracking columns record work durations on Work Log III items; used for productivity and billing analytics.",
+      "platform": "Monday \u2014 Work Log III (built-in)",
+      "status": "Live",
+      "owner": "\u2014",
+      "tags": [
+        "monday",
+        "worklog-iii",
+        "time-tracking",
+        "productivity",
+        "billing",
+        "internal"
+      ]
+    },
+    {
+      "id": "monday-internal-timestamps",
+      "file": "monday-internal-timestamps.html",
+      "name": "Timestamps",
+      "title": "Timestamps (WLIII)",
+      "summary": "Built-in Monday automation on Work Log III that sets the date &amp; time an item is created and updates timestamp fields automatically when status / key events occur.",
+      "platform": "Monday \u2014 Work Log III (built-in)",
+      "status": "Live",
+      "owner": "\u2014",
+      "tags": [
+        "monday",
+        "worklog-iii",
+        "timestamps",
+        "dates",
+        "internal"
+      ]
+    },
+    {
+      "id": "wliii-gmail-button-clicked-delivery",
+      "file": "wliii-gmail-button-clicked-delivery.html",
+      "name": "WLIII Gmail \u2014 Button click delivery email",
+      "title": "WLIII Gmail \u2014 Button click delivery email",
+      "summary": "Work Log III active Gmail automation: when a button is clicked on an item, send an email to ALL Recipients (Delivery) and to the Email Address column.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "monday",
+        "worklog-iii",
+        "gmail",
+        "button",
+        "delivery",
+        "email"
+      ],
+      "automation_id": "162375199"
+    },
+    {
+      "id": "wliii-gmail-due-date-changes",
+      "file": "wliii-gmail-due-date-changes.html",
+      "name": "WLIII Gmail \u2014 Due Date changes (only if Status is not Pending)",
+      "title": "WLIII Gmail \u2014 Due Date changes (not Pending)",
+      "summary": "Work Log III active Gmail automation: when Due Date changes, and only if Status is not Pending, send an email to the Email Address column.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "monday",
+        "worklog-iii",
+        "gmail",
+        "due-date",
+        "email",
+        "status"
+      ],
+      "automation_id": "164415901"
+    },
+    {
+      "id": "wliii-gmail-email-received-create-inbox",
+      "file": "wliii-gmail-email-received-create-inbox.html",
+      "name": "WLIII Gmail \u2014 Email received creates item in Inbox",
+      "title": "WLIII Gmail \u2014 Email received creates item in Inbox",
+      "summary": "Work Log III active Gmail automation: when an email is received, create an item in the Inbox group.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Leah Papageorgiou",
+      "tags": [
+        "monday",
+        "worklog-iii",
+        "gmail",
+        "inbox",
+        "email",
+        "item-create"
+      ],
+      "automation_id": "368133719"
+    },
+    {
+      "id": "wliii-gmail-status-pending-to-uploaded",
+      "file": "wliii-gmail-status-pending-to-uploaded.html",
+      "name": "WLIII Gmail \u2014 Status Pending \u2192 Uploaded",
+      "title": "WLIII Gmail \u2014 Status Pending \u2192 Uploaded",
+      "summary": "Work Log III active Gmail automation: when Status changes from Pending to Uploaded, send an email to the Email Address column.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "monday",
+        "worklog-iii",
+        "gmail",
+        "status",
+        "email",
+        "uploaded",
+        "pending"
+      ],
+      "automation_id": "240213300"
+    },
+    {
+      "id": "wliii-jotform-basic-mto-scope",
+      "file": "wliii-jotform-basic-mto-scope.html",
+      "name": "WLIII Jotform \u2014 Assign Basic MTO Scope Checklist",
+      "title": "WLIII Jotform \u2014 Assign Basic MTO Scope Checklist",
+      "summary": "Work Log III active Jotform Form Builder v4 automation: when a status changes to something, assign the Basic MTO Scope Checklist to the Email Address column.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "monday",
+        "worklog-iii",
+        "jotform",
+        "mto",
+        "scope",
+        "form",
+        "status",
+        "email"
+      ],
+      "automation_id": "166313877"
+    },
+    {
+      "id": "wliii-jotform-irrigation-design-request",
+      "file": "wliii-jotform-irrigation-design-request.html",
+      "name": "WLIII Jotform \u2014 Assign Irrigation Design Request Form",
+      "title": "WLIII Jotform \u2014 Assign Irrigation Design Request Form",
+      "summary": "Work Log III active Jotform Form Builder v4 automation: when a status changes to something, assign the Irrigation Design Request Form to the Email Address column.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "monday",
+        "worklog-iii",
+        "jotform",
+        "irrigation",
+        "form",
+        "status",
+        "email"
+      ],
+      "automation_id": "168508967"
+    },
+    {
+      "id": "wliii-monday-15-days-recd-on-hold-archive",
+      "file": "wliii-monday-15-days-recd-on-hold-archive.html",
+      "name": "WLIII: 15 days after Rec'd Date arrives and only if item is in ON HOLD and only if Status is HOLD, move item to Archive of WLIII",
+      "title": "WLIII: 15 days after Rec'd Date, if in ON HOLD and Status HOLD, move item to Archive",
+      "summary": "Monday native automation on Work Log III: 15 days after the Rec'd Date of an item in the ON HOLD group with Status HOLD, the item is automatically moved to the Archive of WLIII board.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "monday",
+        "wliii",
+        "date-change",
+        "recd-date",
+        "status",
+        "group-move",
+        "archive",
+        "hold",
+        "on-hold",
+        "scheduled"
+      ],
+      "automation_id": "250395877",
+      "last_updated": "Jan 5, 2024, 3:13 PM"
+    },
+    {
+      "id": "wliii-monday-2-days-recd-cancelled-archive",
+      "file": "wliii-monday-2-days-recd-cancelled-archive.html",
+      "name": "WLIII: 2 days after Rec'd Date arrives and only if item is in Cancelled Projects and only if Status is CANCELLED, move item to Archive of WLIII",
+      "title": "WLIII: 2 days after Rec'd Date, if in Cancelled Projects and Status CANCELLED, move item to Archive",
+      "summary": "Monday native automation on Work Log III: 2 days after the Rec'd Date of an item in the Cancelled Projects group with Status CANCELLED, the item is automatically moved to the Archive of WLIII board.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "monday",
+        "wliii",
+        "date-change",
+        "recd-date",
+        "status",
+        "group-move",
+        "archive",
+        "cancelled",
+        "scheduled"
+      ],
+      "automation_id": "250398502",
+      "last_updated": "Jan 5, 2024, 3:19 PM"
+    },
+    {
+      "id": "wliii-monday-billing-credit-block-create-billing-item",
+      "file": "wliii-monday-billing-credit-block-create-billing-item.html",
+      "name": "WLIII: When Billing Status changes to Credit Block and only if Status is Delivered, create an item in Credit Block / Dedicated Resource - Billing",
+      "title": "WLIII: When Billing Status changes to Credit Block (and Status is Delivered), create item in Credit Block / Dedicated Resource - Billing",
+      "summary": "Monday native automation on Work Log III: when Billing Status changes to Credit Block while Status is Delivered, a corresponding item is created on the Credit Block / Dedicated Resource - Billing board.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Amy MacPherson",
+      "tags": [
+        "monday",
+        "wliii",
+        "status-change",
+        "billing-status",
+        "status",
+        "credit-block",
+        "create-item",
+        "billing"
+      ],
+      "automation_id": "178239038",
+      "last_updated": "Apr 3, 2024, 12:52 PM"
+    },
+    {
+      "id": "wliii-monday-billing-dedicated-resource-create-billing-item",
+      "file": "wliii-monday-billing-dedicated-resource-create-billing-item.html",
+      "name": "WLIII: When Billing Status changes to Dedicated Resource and only if Status is Delivered, create an item in Credit Block / Dedicated Resource - Billing",
+      "title": "WLIII: When Billing Status changes to Dedicated Resource (and Status is Delivered), create item in Credit Block / Dedicated Resource - Billing",
+      "summary": "Monday native automation on Work Log III: when Billing Status changes to Dedicated Resource while Status is Delivered, a corresponding item is created on the Credit Block / Dedicated Resource - Billing board.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Amy MacPherson",
+      "tags": [
+        "monday",
+        "wliii",
+        "status-change",
+        "billing-status",
+        "status",
+        "dedicated-resource",
+        "create-item",
+        "billing"
+      ],
+      "automation_id": "178232757",
+      "last_updated": "Apr 3, 2024, 12:52 PM"
+    },
+    {
+      "id": "wliii-monday-billing-trial-create-trials-item",
+      "file": "wliii-monday-billing-trial-create-trials-item.html",
+      "name": "WLIII: When Billing Status changes to Trial and only if Status is Delivered, create an item in New Client Trials",
+      "title": "WLIII: When Billing Status changes to Trial (and Status is Delivered), create item in New Client Trials",
+      "summary": "Monday native automation on Work Log III: when Billing Status changes to Trial while Status is Delivered, a corresponding item is created on the New Client Trials board.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "monday",
+        "wliii",
+        "status-change",
+        "billing-status",
+        "status",
+        "trial",
+        "create-item",
+        "new-client-trials"
+      ],
+      "automation_id": "172637104",
+      "last_updated": "Apr 3, 2024, 12:51 PM"
+    },
+    {
+      "id": "wliii-monday-button-move-active",
+      "file": "wliii-monday-button-move-active.html",
+      "name": "WLIII: When button clicked, move item to Active Projects (Uploaded / In Progress / Complete)",
+      "title": "WLIII: When button clicked, move item to Active Projects",
+      "summary": "Monday native automation on Work Log III: clicking the configured button column on an item moves that item into the Active Projects (Uploaded / In Progress / Complete) group.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "monday",
+        "wliii",
+        "button",
+        "group-move",
+        "active-projects"
+      ],
+      "automation_id": "159308817",
+      "last_updated": "Jan 29, 2023, 7:49 AM"
+    },
+    {
+      "id": "wliii-monday-button-set-status-delivered",
+      "file": "wliii-monday-button-set-status-delivered.html",
+      "name": "WLIII: When button clicked, set Status to Delivered",
+      "title": "WLIII: When button clicked, set Status to Delivered",
+      "summary": "Monday native automation on Work Log III: clicking the configured button column on an item sets the Status column to Delivered.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "monday",
+        "wliii",
+        "button",
+        "status",
+        "delivered"
+      ],
+      "automation_id": "168628233",
+      "last_updated": "Mar 1, 2023, 3:05 PM"
+    },
+    {
+      "id": "wliii-monday-client-name-recast-formula-1",
+      "file": "wliii-monday-client-name-recast-formula-1.html",
+      "name": "WLIII: When Client Name changes, perform formula and cast result to Client Name (text, recast)",
+      "title": "WLIII: When Client Name changes, perform formula and cast result to Client Name (text, recast)",
+      "summary": "Monday native automation on Work Log III: when the Client Name column changes, a formula runs and its result is written into the Client Name (text, recast) column.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "monday",
+        "wliii",
+        "column-change",
+        "client-name",
+        "formula",
+        "recast"
+      ],
+      "automation_id": "476657097",
+      "last_updated": "Sep 29, 2025, 4:17 PM"
+    },
+    {
+      "id": "wliii-monday-client-name-recast-formula-2",
+      "file": "wliii-monday-client-name-recast-formula-2.html",
+      "name": "WLIII: When Client Name changes, apply a formula and set the result to Client Name (text, recast)",
+      "title": "WLIII: When Client Name changes, apply a formula and set the result to Client Name (text, recast)",
+      "summary": "Monday native automation on Work Log III: when the Client Name column changes, a formula is applied and the result is set on the Client Name (text, recast) column. This is a companion / variant of automation 476657097.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "monday",
+        "wliii",
+        "column-change",
+        "client-name",
+        "formula",
+        "recast"
+      ],
+      "automation_id": "476838353",
+      "last_updated": "Sep 30, 2025, 5:10 AM"
+    },
+    {
+      "id": "wliii-monday-item-created-set-recd-date",
+      "file": "wliii-monday-item-created-set-recd-date.html",
+      "name": "WLIII: When an item is created, set Rec'd Date to today",
+      "title": "WLIII: When an item is created, set Rec'd Date to today",
+      "summary": "Monday native automation on Work Log III: when a new item is created on the board, the Rec'd Date column is automatically set to today's date.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "monday",
+        "wliii",
+        "item-created",
+        "recd-date",
+        "date",
+        "auto-date"
+      ],
+      "automation_id": "159798886",
+      "last_updated": "Jan 29, 2023, 7:48 AM"
+    },
+    {
+      "id": "wliii-monday-status-cancelled-move-and-stop-tracking",
+      "file": "wliii-monday-status-cancelled-move-and-stop-tracking.html",
+      "name": "WLIII: When Status changes to CANCELLED, move item to Cancelled Projects and stop Time Tracking",
+      "title": "WLIII: When Status changes to CANCELLED, move item to Cancelled Projects and stop Time Tracking",
+      "summary": "Monday native automation on Work Log III: when an item's Status changes to CANCELLED, the item is moved into Cancelled Projects and its Time Tracking timer is stopped in one step.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "monday",
+        "wliii",
+        "status-change",
+        "status",
+        "group-move",
+        "time-tracking",
+        "cancelled",
+        "cancelled-projects"
+      ],
+      "automation_id": "172611253",
+      "last_updated": "Apr 3, 2024, 5:17 AM"
+    },
+    {
+      "id": "wliii-monday-status-cancelled-move-cancelled",
+      "file": "wliii-monday-status-cancelled-move-cancelled.html",
+      "name": "WLIII: When Status changes to CANCELLED, move item to Cancelled Projects",
+      "title": "WLIII: When Status changes to CANCELLED, move item to Cancelled Projects",
+      "summary": "Monday native automation on Work Log III: when an item's Status changes to CANCELLED, the item is automatically moved into the Cancelled Projects group.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "monday",
+        "wliii",
+        "status-change",
+        "status",
+        "group-move",
+        "cancelled",
+        "cancelled-projects"
+      ],
+      "automation_id": "164308853",
+      "last_updated": "Apr 3, 2024, 5:16 AM"
+    },
+    {
+      "id": "wliii-monday-status-complete-priscilla-notify",
+      "file": "wliii-monday-status-complete-priscilla-notify.html",
+      "name": "WLIII: When Status changes to Complete and only if To Process: is assigned to Priscilla Rosales, notify Priscilla Rosales",
+      "title": "WLIII: When Status changes to Complete (and To Process is Priscilla), notify Priscilla",
+      "summary": "Monday native automation on Work Log III: when an item assigned to Priscilla Rosales in the To Process: column has its Status changed to Complete, Priscilla receives a Monday notification.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Priscilla Rosales",
+      "tags": [
+        "monday",
+        "wliii",
+        "status-change",
+        "status",
+        "complete",
+        "notification",
+        "priscilla",
+        "to-process"
+      ],
+      "automation_id": "342008791",
+      "last_updated": "Sep 24, 2024, 10:13 AM"
+    },
+    {
+      "id": "wliii-monday-status-complete-procore-set-comp-date",
+      "file": "wliii-monday-status-complete-procore-set-comp-date.html",
+      "name": "WLIII: When Status changes to Complete in Procore, set Comp. Date to today",
+      "title": "WLIII: When Status changes to Complete in Procore, set Comp. Date to today",
+      "summary": "Monday native automation on Work Log III: when an item's Status changes to Complete in Procore, the Comp. Date column is automatically set to today's date.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Amy MacPherson",
+      "tags": [
+        "monday",
+        "wliii",
+        "status-change",
+        "status",
+        "comp-date",
+        "date",
+        "procore",
+        "complete-in-procore"
+      ],
+      "automation_id": "336746075",
+      "last_updated": "Sep 6, 2024, 1:24 PM"
+    },
+    {
+      "id": "wliii-monday-status-complete-set-comp-date",
+      "file": "wliii-monday-status-complete-set-comp-date.html",
+      "name": "WLIII: When Status changes to Complete, set Comp. Date to today (Auto Comp. Date)",
+      "title": "WLIII: When Status changes to Complete, set Comp. Date to today (Auto Comp. Date)",
+      "summary": "Monday native automation on Work Log III: when an item's Status changes to Complete, the Comp. Date column is automatically set to today's date.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "monday",
+        "wliii",
+        "status-change",
+        "status",
+        "comp-date",
+        "date",
+        "complete",
+        "auto-date"
+      ],
+      "automation_id": "159116751",
+      "last_updated": "Apr 3, 2024, 5:18 AM"
+    },
+    {
+      "id": "wliii-monday-status-complete-stop-time-tracking",
+      "file": "wliii-monday-status-complete-stop-time-tracking.html",
+      "name": "WLIII: When Status changes to Complete, stop Time Tracking",
+      "title": "WLIII: When Status changes to Complete, stop Time Tracking",
+      "summary": "Monday native automation on Work Log III: when an item's Status changes to Complete, the running Time Tracking timer is stopped.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "monday",
+        "wliii",
+        "status-change",
+        "status",
+        "time-tracking",
+        "complete"
+      ],
+      "automation_id": "161318504",
+      "last_updated": "Apr 3, 2024, 5:15 AM"
+    },
+    {
+      "id": "wliii-monday-status-convo-move-conversation",
+      "file": "wliii-monday-status-convo-move-conversation.html",
+      "name": "WLIII: When Status changes to Convo, move item to Conversation",
+      "title": "WLIII: When Status changes to Convo, move item to Conversation",
+      "summary": "Monday native automation on Work Log III: when an item's Status changes to Convo, the item is moved into the Conversation group.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "monday",
+        "wliii",
+        "status-change",
+        "status",
+        "group-move",
+        "convo",
+        "conversation"
+      ],
+      "automation_id": "160933056",
+      "last_updated": "Apr 3, 2024, 5:19 AM"
+    },
+    {
+      "id": "wliii-monday-status-delivered-billing-trial-create-trials",
+      "file": "wliii-monday-status-delivered-billing-trial-create-trials.html",
+      "name": "WLIII: When Status changes to Delivered and only if Billing Status is Trial, create an item in New Client Trials",
+      "title": "WLIII: When Status changes to Delivered (and Billing Status is Trial), create item in New Client Trials",
+      "summary": "Monday native automation on Work Log III: when an item's Status changes to Delivered while Billing Status is Trial, a corresponding item is created on the New Client Trials board.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "monday",
+        "wliii",
+        "status-change",
+        "status",
+        "billing-status",
+        "trial",
+        "create-item",
+        "new-client-trials",
+        "delivered"
+      ],
+      "automation_id": "172601971",
+      "last_updated": "Apr 3, 2024, 5:19 AM"
+    },
+    {
+      "id": "wliii-monday-status-delivered-move-delivered",
+      "file": "wliii-monday-status-delivered-move-delivered.html",
+      "name": "WLIII: When Status changes to Delivered, move item to Delivered Projects (Auto Delivered Group)",
+      "title": "WLIII: When Status changes to Delivered, move item to Delivered Projects (Auto Delivered Group)",
+      "summary": "Monday native automation on Work Log III: when an item's Status changes to Delivered, the item is moved into the Delivered Projects group.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "monday",
+        "wliii",
+        "status-change",
+        "status",
+        "group-move",
+        "delivered",
+        "delivered-projects"
+      ],
+      "automation_id": "159117233",
+      "last_updated": "Apr 3, 2024, 5:17 AM"
+    },
+    {
+      "id": "wliii-monday-status-delivered-ratliff-set-to",
+      "file": "wliii-monday-status-delivered-ratliff-set-to.html",
+      "name": "WLIII: When Status changes to Delivered and only if From is Ratliff HS, set To to Ratliff HS",
+      "title": "WLIII: When Status changes to Delivered (and From is Ratliff HS), set To to Ratliff HS",
+      "summary": "Monday native automation on Work Log III: when an item's Status changes to Delivered and the From column is Ratliff HS, the To column is automatically set to Ratliff HS.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Amy MacPherson",
+      "tags": [
+        "monday",
+        "wliii",
+        "status-change",
+        "status",
+        "delivered",
+        "ratliff",
+        "from",
+        "to",
+        "column-set"
+      ],
+      "automation_id": "419758381",
+      "last_updated": "May 2, 2025, 1:34 PM"
+    },
+    {
+      "id": "wliii-monday-status-delivered-set-delivered-date",
+      "file": "wliii-monday-status-delivered-set-delivered-date.html",
+      "name": "WLIII: When Status changes to Delivered, set Delivered Date to today (Auto Delivered Date)",
+      "title": "WLIII: When Status changes to Delivered, set Delivered Date to today (Auto Delivered Date)",
+      "summary": "Monday native automation on Work Log III: when an item's Status changes to Delivered, the Delivered Date column is automatically set to today's date.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "monday",
+        "wliii",
+        "status-change",
+        "status",
+        "delivered-date",
+        "date",
+        "delivered",
+        "auto-date"
+      ],
+      "automation_id": "159116976",
+      "last_updated": "Apr 3, 2024, 5:16 AM"
+    },
+    {
+      "id": "wliii-monday-status-design-prep-move-design-prep",
+      "file": "wliii-monday-status-design-prep-move-design-prep.html",
+      "name": "WLIII: When Status changes to Design Prep, move item to Design Prep (Ewing Only)",
+      "title": "WLIII: When Status changes to Design Prep, move item to Design Prep (Ewing Only)",
+      "summary": "Monday native automation on Work Log III: when an item's Status changes to Design Prep, the item is moved into the Design Prep (Ewing Only) group.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "monday",
+        "wliii",
+        "status-change",
+        "status",
+        "group-move",
+        "design-prep",
+        "ewing"
+      ],
+      "automation_id": "421373146",
+      "last_updated": "May 7, 2025, 12:28 PM"
+    },
+    {
+      "id": "wliii-monday-status-duplicate-move-duplicates",
+      "file": "wliii-monday-status-duplicate-move-duplicates.html",
+      "name": "WLIII: When Status changes to DUPLICATE, move item to Duplicates",
+      "title": "WLIII: When Status changes to DUPLICATE, move item to Duplicates",
+      "summary": "Monday native automation on Work Log III: when an item's Status changes to DUPLICATE, the item is moved into the Duplicates group.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Amy MacPherson",
+      "tags": [
+        "monday",
+        "wliii",
+        "status-change",
+        "status",
+        "group-move",
+        "duplicate",
+        "duplicates"
+      ],
+      "automation_id": "480934141",
+      "last_updated": "Dec 9, 2025, 6:47 AM"
+    },
+    {
+      "id": "wliii-monday-status-hold-move-on-hold",
+      "file": "wliii-monday-status-hold-move-on-hold.html",
+      "name": "WLIII: When Status changes to HOLD, move item to ON HOLD",
+      "title": "WLIII: When Status changes to HOLD, move item to ON HOLD",
+      "summary": "Monday native automation on Work Log III: when an item's Status changes to HOLD, the item is moved into the ON HOLD group.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "monday",
+        "wliii",
+        "status-change",
+        "status",
+        "group-move",
+        "hold",
+        "on-hold"
+      ],
+      "automation_id": "183289568",
+      "last_updated": "Apr 3, 2024, 5:18 AM"
+    },
+    {
+      "id": "wliii-monday-status-hold-stop-tracking",
+      "file": "wliii-monday-status-hold-stop-tracking.html",
+      "name": "WLIII: When Status changes to HOLD, stop Time Tracking",
+      "title": "WLIII: When Status changes to HOLD, stop Time Tracking",
+      "summary": "Monday native automation on Work Log III: when an item's Status changes to HOLD, the running Time Tracking timer is stopped.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "monday",
+        "wliii",
+        "status-change",
+        "status",
+        "time-tracking",
+        "hold"
+      ],
+      "automation_id": "172610956",
+      "last_updated": "Apr 3, 2024, 5:18 AM"
+    },
+    {
+      "id": "wliii-monday-status-in-process-from-hold-move-active",
+      "file": "wliii-monday-status-in-process-from-hold-move-active.html",
+      "name": "WLIII: When Status changes to In Process and only if Status is HOLD, move item to Active Projects (Uploaded / In Progress / Complete)",
+      "title": "WLIII: When Status changes to In Process (and prior Status is HOLD), move item to Active Projects",
+      "summary": "Monday native automation on Work Log III: when an item transitions to In Process from a HOLD status, the item is moved back into the Active Projects (Uploaded / In Progress / Complete) group.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Amy MacPherson",
+      "tags": [
+        "monday",
+        "wliii",
+        "status-change",
+        "status",
+        "group-move",
+        "in-process",
+        "hold",
+        "active-projects"
+      ],
+      "automation_id": "442283212",
+      "last_updated": "Jul 2, 2025, 12:39 PM"
+    },
+    {
+      "id": "wliii-monday-status-prep-complete-stop-prep",
+      "file": "wliii-monday-status-prep-complete-stop-prep.html",
+      "name": "WLIII: When Status changes to Prep Complete, stop Prep",
+      "title": "WLIII: When Status changes to Prep Complete, stop Prep",
+      "summary": "Monday native automation on Work Log III: when an item's Status changes to Prep Complete, the running Prep time-tracking session is stopped.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "monday",
+        "wliii",
+        "status-change",
+        "status",
+        "prep",
+        "prep-complete",
+        "time-tracking"
+      ],
+      "automation_id": "419255432",
+      "last_updated": "May 1, 2025, 10:11 AM"
+    },
+    {
+      "id": "wliii-monday-status-prep-move-active",
+      "file": "wliii-monday-status-prep-move-active.html",
+      "name": "WLIII: When Status changes to PREP, move item to Active Projects (Uploaded / In Progress / Complete)",
+      "title": "WLIII: When Status changes to PREP, move item to Active Projects",
+      "summary": "Monday native automation on Work Log III: when an item's Status changes to PREP, the item is automatically moved into the Active Projects (Uploaded / In Progress / Complete) group.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Priscilla Rosales",
+      "tags": [
+        "monday",
+        "wliii",
+        "status-change",
+        "status",
+        "group-move",
+        "prep",
+        "active-projects"
+      ],
+      "automation_id": "413163370",
+      "last_updated": "Apr 14, 2025, 1:55 PM"
+    },
+    {
+      "id": "wliii-monday-status-prep-start-time-tracking",
+      "file": "wliii-monday-status-prep-start-time-tracking.html",
+      "name": "WLIII: When Status changes to PREP, start Time Tracking",
+      "title": "WLIII: When Status changes to PREP, start Time Tracking",
+      "summary": "Monday native automation on Work Log III: when an item's Status changes to PREP, the item's Time Tracking column starts a new timer entry.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "monday",
+        "wliii",
+        "status-change",
+        "status",
+        "time-tracking",
+        "prep"
+      ],
+      "automation_id": "416917965",
+      "last_updated": "Apr 24, 2025, 1:45 PM"
+    },
+    {
+      "id": "wliii-monday-status-reached-out-move-on-hold",
+      "file": "wliii-monday-status-reached-out-move-on-hold.html",
+      "name": "WLIII: When Status changes to Reached out, move item to ON HOLD",
+      "title": "WLIII: When Status changes to Reached out, move item to ON HOLD",
+      "summary": "Monday native automation on Work Log III: when an item's Status changes to Reached out, the item is moved into the ON HOLD group.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Amy MacPherson",
+      "tags": [
+        "monday",
+        "wliii",
+        "status-change",
+        "status",
+        "group-move",
+        "reached-out",
+        "on-hold"
+      ],
+      "automation_id": "331198902",
+      "last_updated": "Aug 20, 2024, 3:11 PM"
+    },
+    {
+      "id": "wliii-monday-status-something-set-recd-date",
+      "file": "wliii-monday-status-something-set-recd-date.html",
+      "name": "WLIII: When status changes to something, set Rec'd Date to today (Auto Rec'vd Date)",
+      "title": "WLIII: When status changes to something, set Rec'd Date to today (Auto Rec'vd Date)",
+      "summary": "Monday native automation on Work Log III: when an item's Status changes to the configured value, the Rec'd Date column is automatically set to today's date.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "monday",
+        "wliii",
+        "status-change",
+        "status",
+        "recd-date",
+        "date",
+        "auto-date"
+      ],
+      "automation_id": "159116647",
+      "last_updated": "Jan 29, 2023, 1:02 PM"
+    },
+    {
+      "id": "wliii-monday-status-uploaded-from-on-hold-move-active",
+      "file": "wliii-monday-status-uploaded-from-on-hold-move-active.html",
+      "name": "WLIII: When Status changes to Uploaded and only if item is in ON HOLD, move item to Active Projects (Uploaded / In Progress / Complete)",
+      "title": "WLIII: When Status changes to Uploaded (and item is in ON HOLD), move item to Active Projects",
+      "summary": "Monday native automation on Work Log III: when an item currently in the ON HOLD group has its Status changed to Uploaded, the item is moved into the Active Projects (Uploaded / In Progress / Complete) group.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Leah Papageorgiou",
+      "tags": [
+        "monday",
+        "wliii",
+        "status-change",
+        "status",
+        "group-move",
+        "uploaded",
+        "on-hold",
+        "active-projects"
+      ],
+      "automation_id": "311552562",
+      "last_updated": "Oct 11, 2024, 5:08 PM"
+    },
+    {
+      "id": "wliii-monday-status-uploaded-move-active",
+      "file": "wliii-monday-status-uploaded-move-active.html",
+      "name": "WLIII: When Status changes to Uploaded, move item to Active Projects (Uploaded / In Progress / Complete)",
+      "title": "WLIII: When Status changes to Uploaded, move item to Active Projects",
+      "summary": "Monday native automation on Work Log III: when an item's Status changes to Uploaded, the item is moved into the Active Projects (Uploaded / In Progress / Complete) group.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "monday",
+        "wliii",
+        "status-change",
+        "status",
+        "group-move",
+        "uploaded",
+        "active-projects"
+      ],
+      "automation_id": "159798448",
+      "last_updated": "Aug 12, 2024, 8:40 AM"
+    },
+    {
+      "id": "wliii-monday-status-uploaded-start-time-tracking",
+      "file": "wliii-monday-status-uploaded-start-time-tracking.html",
+      "name": "WLIII: When Status changes to Uploaded, start Time Tracking",
+      "title": "WLIII: When Status changes to Uploaded, start Time Tracking",
+      "summary": "Monday native automation on Work Log III: when an item's Status changes to Uploaded, the Time Tracking column starts a new timer entry.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "monday",
+        "wliii",
+        "status-change",
+        "status",
+        "time-tracking",
+        "uploaded"
+      ],
+      "automation_id": "161318343",
+      "last_updated": "Apr 3, 2024, 5:17 AM"
+    },
+    {
+      "id": "wliii-slack-status-prep-in-process-notify",
+      "file": "wliii-slack-status-prep-in-process-notify.html",
+      "name": "WLIII Slack \u2014 Status Prep in Process \u2192 notify general &amp; start Prep",
+      "title": "WLIII Slack \u2014 Status Prep in Process notify & start Prep",
+      "summary": "Work Log III active Slack automation: when Status changes to Prep in Process, notify in #general and start the Prep time-tracking timer.",
+      "platform": "Monday \u2014 Work Log III (active automation)",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "monday",
+        "worklog-iii",
+        "slack",
+        "prep",
+        "status",
+        "time-tracking",
+        "notify"
+      ],
+      "automation_id": "419253626"
+    },
+    {
+      "id": "zapier-blogger",
+      "file": "zapier-blogger.html",
+      "name": "Blogger",
+      "title": "Blogger",
+      "summary": "Zapier automation that takes a blog topic/idea from a Monday board plus any specific information and produces a draft blog article in Google Docs.",
+      "platform": "Zapier",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "zapier",
+        "openai",
+        "gemini",
+        "monday",
+        "google-docs",
+        "blog",
+        "content"
+      ]
+    },
+    {
+      "id": "zapier-clms-inbox-loader",
+      "file": "zapier-clms-inbox-loader.html",
+      "name": "CLMS Inbox Loader",
+      "title": "CLMS Inbox Loader",
+      "summary": "Zapier automation that populates items on the CLMS customer bid board from emails sent to CLMS@takeoffmonkey.com (an alias of bids@..).",
+      "platform": "Zapier",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "zapier",
+        "gmail",
+        "monday",
+        "clms",
+        "bid-board",
+        "email-loader"
+      ]
+    },
+    {
+      "id": "zapier-completed-docusign-loader",
+      "file": "zapier-completed-docusign-loader.html",
+      "name": "Completed DocuSign Loader",
+      "title": "Completed DocuSign Loader",
+      "summary": "Zapier automation that logs completed DocuSign envelopes to a Monday board.",
+      "platform": "Zapier",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "zapier",
+        "docusign",
+        "monday",
+        "gmail",
+        "contracts",
+        "logging"
+      ]
+    },
+    {
+      "id": "zapier-demo-bb-loader",
+      "file": "zapier-demo-bb-loader.html",
+      "name": "Demo BB Loader",
+      "title": "Demo BB Loader",
+      "summary": "Zapier automation (for demonstration purposes) that populates items on a customer bid board from emails sent to yourcompany@takeoffmonkey.com (an alias of bids@..).",
+      "platform": "Zapier",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "zapier",
+        "gmail",
+        "monday",
+        "demo",
+        "bid-board",
+        "email-loader"
+      ]
+    },
+    {
+      "id": "zapier-dropbox-folder-builder",
+      "file": "zapier-dropbox-folder-builder.html",
+      "name": "Dropbox Folder Builder",
+      "title": "Dropbox Folder Builder",
+      "summary": "Zapier automation that creates day, client, and job folders in the inbox/purgatory area as projects hit our inbox.",
+      "platform": "Zapier",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "zapier",
+        "dropbox",
+        "monday",
+        "folders",
+        "inbox",
+        "purgatory"
+      ]
+    },
+    {
+      "id": "zapier-due-date-vs-customer-due-date",
+      "file": "zapier-due-date-vs-customer-due-date.html",
+      "name": "Due Date vs Customer Due Date",
+      "title": "Due Date vs Customer Due Date",
+      "summary": "Zapier automation that alerts the TOM US team when an internal due date is set ON or AFTER the customer's actual due date.",
+      "platform": "Zapier",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "zapier",
+        "monday",
+        "due-date",
+        "alert",
+        "scheduling"
+      ]
+    },
+    {
+      "id": "zapier-embassy-bb-loader",
+      "file": "zapier-embassy-bb-loader.html",
+      "name": "Embassy BB Loader",
+      "title": "Embassy BB Loader",
+      "summary": "Zapier automation that populates items on the Embassy customer bid board from emails sent to embassy@takeoffmonkey.com (an alias of bids@..).",
+      "platform": "Zapier",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "zapier",
+        "gmail",
+        "monday",
+        "embassy",
+        "bid-board",
+        "email-loader"
+      ]
+    },
+    {
+      "id": "zapier-ewing-auto-loader",
+      "file": "zapier-ewing-auto-loader.html",
+      "name": "Ewing Auto Loader",
+      "title": "Ewing Auto Loader",
+      "summary": "Zapier automation that creates Monday items and populates columns with structured data parsed from emails sent to ewing@takeoffmonkey.com.",
+      "platform": "Zapier",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "zapier",
+        "gmail",
+        "monday",
+        "ewing",
+        "email-loader",
+        "job-routing"
+      ]
+    },
+    {
+      "id": "zapier-ewing-delivered-job-mover",
+      "file": "zapier-ewing-delivered-job-mover.html",
+      "name": "Ewing Delivered Job Mover",
+      "title": "Ewing Delivered Job Mover",
+      "summary": "Zapier automation that pushes a job row from the 'Active' tab to the 'Delivered' tab on the back-up Google Sheet once it's delivered.",
+      "platform": "Zapier",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "zapier",
+        "google-sheets",
+        "ewing",
+        "delivered",
+        "backup"
+      ]
+    },
+    {
+      "id": "zapier-ewing-inbox-checker",
+      "file": "zapier-ewing-inbox-checker.html",
+      "name": "Ewing Inbox Checker",
+      "title": "Ewing Inbox Checker",
+      "summary": "Four separate Zapier automations (one per Ewing region) that alert the client of projects which have NOT been pushed into our queue near the region's end-of-day cutoff time.",
+      "platform": "Zapier",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "zapier",
+        "monday",
+        "slack",
+        "ewing",
+        "cutoff",
+        "inbox",
+        "alert"
+      ]
+    },
+    {
+      "id": "zapier-hls-muzaffar-assignment",
+      "file": "zapier-hls-muzaffar-assignment.html",
+      "name": "HLS - Muzaffar Assignment",
+      "title": "HLS - Muzaffar Assignment",
+      "summary": "Zapier automation that assigns completed irrigation designs for HLS to Muzaffar for final review.",
+      "platform": "Zapier",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "zapier",
+        "monday",
+        "hls",
+        "irrigation",
+        "assignment",
+        "review"
+      ]
+    },
+    {
+      "id": "zapier-hls-note-bot",
+      "file": "zapier-hls-note-bot.html",
+      "name": "HLS Note Bot",
+      "title": "HLS Note Bot",
+      "summary": "Zapier automation that grabs notes from giddyup (HLS client platform) and drops them into the matching Monday items as updates.",
+      "platform": "Zapier",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "zapier",
+        "gmail",
+        "monday",
+        "hls",
+        "giddyup",
+        "notes"
+      ]
+    },
+    {
+      "id": "zapier-jmi-inbox-loader",
+      "file": "zapier-jmi-inbox-loader.html",
+      "name": "JMI Inbox Loader",
+      "title": "JMI Inbox Loader",
+      "summary": "Zapier automation that populates items on the JMI customer bid board from emails sent to JMI@takeoffmonkey.com (an alias of bids@..).",
+      "platform": "Zapier",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "zapier",
+        "gmail",
+        "monday",
+        "jmi",
+        "bid-board",
+        "email-loader"
+      ]
+    },
+    {
+      "id": "zapier-mto-processor-assignment",
+      "file": "zapier-mto-processor-assignment.html",
+      "name": "MTO Processor Assignment",
+      "title": "MTO Processor Assignment",
+      "summary": "Zapier automation that automatically assigns the appropriate reviewer to an MTO based on client, branch, and product type.",
+      "platform": "Zapier",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "zapier",
+        "monday",
+        "assignment",
+        "mto",
+        "routing"
+      ]
+    },
+    {
+      "id": "zapier-night-watchman-ewing",
+      "file": "zapier-night-watchman-ewing.html",
+      "name": "Night Watchman Ewing",
+      "title": "Night Watchman Ewing",
+      "summary": "Zapier automation that alerts customers via Slack when a project is submitted after the Ewing cut-off time (6:30pm CST).",
+      "platform": "Zapier",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "zapier",
+        "monday",
+        "slack",
+        "ewing",
+        "cutoff",
+        "alert"
+      ]
+    },
+    {
+      "id": "zapier-nustyle-inbox-loader",
+      "file": "zapier-nustyle-inbox-loader.html",
+      "name": "NuStyle Inbox Loader",
+      "title": "NuStyle Inbox Loader",
+      "summary": "Zapier automation that populates items on the NuStyle customer bid board from emails sent to nustyle@takeoffmonkey.com (an alias of bids@..).",
+      "platform": "Zapier",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "zapier",
+        "gmail",
+        "monday",
+        "nustyle",
+        "bid-board",
+        "email-loader"
+      ]
+    },
+    {
+      "id": "zapier-prep-complete-monday-assignment",
+      "file": "zapier-prep-complete-monday-assignment.html",
+      "name": "Prep Complete \u2192 Monday Assignment",
+      "title": "Prep Complete \u2192 Monday Assignment",
+      "summary": "Zapier automation that assigns prepper and production team to a Monday item based on client, product type, and region once prep is complete.",
+      "platform": "Zapier",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "zapier",
+        "monday",
+        "assignment",
+        "prep",
+        "routing",
+        "production"
+      ]
+    },
+    {
+      "id": "zapier-prime-lawn-email-loader",
+      "file": "zapier-prime-lawn-email-loader.html",
+      "name": "Prime Lawn Email Loader",
+      "title": "Prime Lawn Email Loader",
+      "summary": "Zapier automation that populates items on the Prime Lawn customer bid board from emails sent to prime@takeoffmonkey.com (an alias of bids@..).",
+      "platform": "Zapier",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "zapier",
+        "gmail",
+        "monday",
+        "prime-lawn",
+        "bid-board",
+        "email-loader"
+      ]
+    },
+    {
+      "id": "zapier-projects-email-spam-notification",
+      "file": "zapier-projects-email-spam-notification.html",
+      "name": "Projects Email Spam Notification",
+      "title": "Projects Email Spam Notification",
+      "summary": "Zapier automation that alerts the US team via Slack when an email hits the spam/junk folder on the projects inbox.",
+      "platform": "Zapier",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "zapier",
+        "gmail",
+        "slack",
+        "spam",
+        "alert",
+        "inbox"
+      ]
+    },
+    {
+      "id": "zapier-projects-inbox-monday-loader",
+      "file": "zapier-projects-inbox-monday-loader.html",
+      "name": "Projects Inbox \u2192 Monday Loader",
+      "title": "Projects Inbox \u2192 Monday Loader",
+      "summary": "Zapier automation that creates items in Monday Work Log III from emails sent to projects@takeoffmonkey.com.",
+      "platform": "Zapier",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "zapier",
+        "gmail",
+        "monday",
+        "inbox",
+        "email-loader",
+        "wliii"
+      ]
+    },
+    {
+      "id": "zapier-roebuck-maint-gmail-integration",
+      "file": "zapier-roebuck-maint-gmail-integration.html",
+      "name": "Roebuck Maint - Gmail Integration",
+      "title": "Roebuck Maint - Gmail Integration",
+      "summary": "Zapier automation that populates items on the Roebuck customer bid board from emails sent to roebuck@takeoffmonkey.com or roebuck_maint (aliases of bids@..).",
+      "platform": "Zapier",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "zapier",
+        "gmail",
+        "monday",
+        "roebuck",
+        "bid-board",
+        "email-loader"
+      ]
+    },
+    {
+      "id": "zapier-website-contact-form-grabber",
+      "file": "zapier-website-contact-form-grabber.html",
+      "name": "Website Contact Form Grabber",
+      "title": "Website Contact Form Grabber",
+      "summary": "Zapier automation that listens for emails generated by website contact-form submissions and logs them to a Monday board.",
+      "platform": "Zapier",
+      "status": "Live",
+      "owner": "Tommy Lather",
+      "tags": [
+        "zapier",
+        "gmail",
+        "monday",
+        "website",
+        "contact-form",
+        "leads"
+      ]
+    }
+  ]
+}

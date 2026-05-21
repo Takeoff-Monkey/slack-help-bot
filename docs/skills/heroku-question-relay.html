@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Question Relay — Takeoff Monkey Skill</title>
+  <meta name="skill-id" content="heroku-question-relay" />
+  <meta name="skill-platform" content="Heroku" />
+  <meta name="skill-status" content="Live" />
+  <meta name="skill-owner" content="Tommy Lather" />
+  <meta name="skill-tags" content="slack,heroku,monday,google-sheets,questions,relay,client" />
+  <style>
+    body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 780px; margin: 2rem auto; padding: 0 1rem; color: #1f2328; line-height: 1.55; }
+    h1 { border-bottom: 1px solid #d0d7de; padding-bottom: .3rem; }
+    h2 { margin-top: 1.8rem; }
+    .meta { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; padding: .8rem 1rem; font-size: .92rem; }
+    .meta dt { font-weight: 600; float: left; clear: left; width: 9rem; }
+    .meta dd { margin-left: 9rem; }
+    .status-live { color: #1a7f37; font-weight: 600; }
+    .status-progress { color: #9a6700; font-weight: 600; }
+    .status-unknown { color: #656d76; font-weight: 600; }
+    code { background: #f6f8fa; padding: .1rem .3rem; border-radius: 3px; font-size: .9em; }
+    ul { padding-left: 1.2rem; }
+    .summary { font-size: 1.05rem; color: #424a53; }
+    a { color: #0969da; }
+  </style>
+</head>
+<body>
+  <h1>Question Relay</h1>
+  <p class="summary">Slack bot that logs production-team questions to a Google Sheet, tracks the question being manually relayed to the client, and routes the client's response back to the original asker.</p>
+
+  <dl class="meta">
+    <dt>Status</dt><dd class="status-live">Live</dd>
+    <dt>Platform</dt><dd>Heroku, Slack</dd>
+    <dt>Owner</dt><dd>Tommy Lather</dd>
+    <dt>Language/Runtime</dt><dd>Python 3.12.5</dd>
+    <dt>Dependencies</dt><dd>Slack API, Monday API</dd>
+    <dt>Guide</dt><dd><a href="https://takeoffmonkey.monday.com/protected_static/8540396/resources/2473015190/Question%20Relay%20Guide%20v1.0.pdf">Question Relay Guide v1.0</a></dd>
+    <dt>Repo</dt><dd><a href="https://git.heroku.com/ewing-question-relay.git">ewing-question-relay (Heroku)</a></dd>
+    <dt>App link</dt><dd><a href="https://git.heroku.com/ewing-question-relay.git">ewing-question-relay (Heroku)</a></dd>
+  </dl>
+
+  <h2>What it does</h2>
+  <p>Captures questions raised by the production team in Slack and logs them to a Google Sheet. Tracks whether the question has been manually relayed to the client, and once a response is received it automatically relays the client's answer back to the team member who originally asked.</p>
+
+  <h2>How to trigger / use</h2>
+  <ul>
+    <li>Production team member asks a question via the Slack bot</li>
+    <li>Question is logged to the Google Sheet and a relay record is created</li>
+    <li>Once the client's response is captured, the bot replies to the original asker</li>
+  </ul>
+
+  <h2>Verify success</h2>
+  <ul>
+    <li>The question appears in the Question Relay Google Sheet with the asker, timestamp, and target client</li>
+    <li>When the client responds, the original asker receives a Slack message with the response</li>
+  </ul>
+
+  <h2>What to collect before escalating</h2>
+  <ul>
+    <li>Slack permalink to the question and the asker's user ID</li>
+    <li>Row in the Question Relay Google Sheet if it was created</li>
+    <li>Expected client + how/where the response was supplied</li>
+  </ul>
+  <p>Escalate to: <strong>Tommy</strong>.</p>
+</body>
+</html>

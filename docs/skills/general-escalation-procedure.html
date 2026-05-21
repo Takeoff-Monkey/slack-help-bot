@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Escalation Procedure — Takeoff Monkey Skill</title>
+  <meta name="skill-id" content="general-escalation-procedure" />
+  <meta name="skill-platform" content="General" />
+  <meta name="skill-status" content="Live" />
+  <meta name="skill-owner" content="Tommy Lather" />
+  <meta name="skill-tags" content="escalation,support,procedure,troubleshooting" />
+  <style>
+    body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 780px; margin: 2rem auto; padding: 0 1rem; color: #1f2328; line-height: 1.55; }
+    h1 { border-bottom: 1px solid #d0d7de; padding-bottom: .3rem; }
+    h2 { margin-top: 1.8rem; }
+    .meta { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; padding: .8rem 1rem; font-size: .92rem; }
+    .meta dt { font-weight: 600; float: left; clear: left; width: 9rem; }
+    .meta dd { margin-left: 9rem; }
+    .status-live { color: #1a7f37; font-weight: 600; }
+    .status-progress { color: #9a6700; font-weight: 600; }
+    .status-unknown { color: #656d76; font-weight: 600; }
+    code { background: #f6f8fa; padding: .1rem .3rem; border-radius: 3px; font-size: .9em; }
+    ul { padding-left: 1.2rem; }
+    .summary { font-size: 1.05rem; color: #424a53; }
+    a { color: #0969da; }
+  </style>
+</head>
+<body>
+  <h1>Escalation Procedure</h1>
+  <p class="summary">If an automation breaks, this is the information you need to collect before escalating so the fix can be fast.</p>
+
+  <dl class="meta">
+    <dt>Status</dt><dd class="status-live">Live</dd>
+    <dt>Platform</dt><dd>General</dd>
+    <dt>Owner</dt><dd>Tommy Lather</dd>
+    <dt>Language/Runtime</dt><dd>—</dd>
+    <dt>Dependencies</dt><dd>—</dd>
+    <dt>Guide</dt><dd>—</dd>
+    <dt>Repo</dt><dd>—</dd>
+    <dt>App link</dt><dd>—</dd>
+  </dl>
+
+  <h2>What it does</h2>
+  <p>Defines the standard package of context to gather any time one of our automations / apps / widgets misbehaves. Collecting these items up-front means the on-call owner (usually Tommy) can diagnose and fix the issue without going back and forth.</p>
+
+  <h2>What to collect before escalating</h2>
+  <ul>
+    <li><strong>What were you trying to do?</strong> (1 sentence)</li>
+    <li><strong>Where?</strong> Board name + link + item name + item ID</li>
+    <li><strong>When?</strong> Timestamp + timezone</li>
+    <li><strong>What changed right before it failed?</strong> Status change, button click, file upload, etc.</li>
+    <li><strong>Expected result vs. actual result</strong></li>
+    <li><strong>Screenshots:</strong> the item + the relevant columns (before / after)</li>
+    <li><strong>Any error messages</strong> (Monday, Slack, email bounce, etc.)</li>
+    <li><strong>Links to artifacts:</strong> Drive folder, doc links, delivered email thread if applicable</li>
+  </ul>
+
+  <h2>How to trigger / use</h2>
+  <ul>
+    <li>When you notice something broken, gather the items above before you ping anyone</li>
+    <li>Send the bundle to Tommy in Slack (or the specific owner if known)</li>
+  </ul>
+
+  <p>Escalate to: <strong>Tommy</strong> (include all of the above so the fix is fast).</p>
+</body>
+</html>
