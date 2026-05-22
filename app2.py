@@ -56,7 +56,11 @@ ALLOWED_USERS = {
 # Example: https://takeoff-monkey.github.io/slack-help-bot/skills
 SKILL_DOCS_BASE_URL = os.environ.get("SKILL_DOCS_BASE_URL", "").rstrip("/")
 
-MODEL = "claude-opus-4-7"
+# Two-tier model setup: Haiku for the cheap selector (structured JSON pick),
+# Sonnet for the answer (reading + summarizing skill docs in Slack-friendly prose).
+# Opus would be overkill for both — this is grounded retrieval, not deep reasoning.
+SELECTOR_MODEL = "claude-haiku-4-5"
+ANSWER_MODEL = "claude-sonnet-4-6"
 MAX_SKILLS_PER_QUESTION = 5
 MAX_SLACK_MESSAGE_CHARS = 3800
 
@@ -123,7 +127,8 @@ Formatting — your output is rendered in Slack, which uses mrkdwn (not standard
 - Bold: single asterisks, like *important* (NOT **double asterisks**)
 - Italics: single underscores, like _example_
 - Bullets: start each line with "- "
-Do not use double-asterisk bold, # / ## headings, or [text](url) link syntax — Slack will display them as literal characters instead of rendering them.
+- Links: write plain URLs prefaced with `http://` or `https://` (e.g. https://github.com/foo/bar). Slack auto-detects and linkifies them. Do NOT wrap URLs in angle brackets like <https://...> and do NOT use [text](url) Markdown syntax — both render as literal characters.
+Do not use double-asterisk bold or # / ## headings — Slack will display them as literal characters instead of rendering them.
 
 Escalation pointer: most systems are owned by Tommy Lather; mention escalating to Tommy if the user is reporting a break and the skill doesn't name a different owner."""
 
@@ -212,7 +217,7 @@ def normalize_message_history(messages: list[dict]) -> list[dict]:
 def select_skills(question: str, history: list[dict]) -> list[str]:
     messages = normalize_message_history(history + [{"role": "user", "content": question}])
     response = anthropic_client.messages.create(
-        model=MODEL,
+        model=SELECTOR_MODEL,
         max_tokens=512,
         system=[
             {
@@ -266,10 +271,10 @@ def answer_question(question: str, skill_ids: list[str], history: list[dict]) ->
     )
 
     with anthropic_client.messages.stream(
-        model=MODEL,
+        model=ANSWER_MODEL,
         max_tokens=2048,
-        thinking={"type": "adaptive"},
-        output_config={"effort": "high"},
+        thinking={"type": "disabled"},
+        output_config={"effort": "medium"},
         system=ANSWER_SYSTEM,
         messages=messages,
     ) as stream:
