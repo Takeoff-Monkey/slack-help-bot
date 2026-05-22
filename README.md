@@ -1,9 +1,116 @@
 # slack-help-bot
 
-git add app2.py
-git commit -m "Drop unsupported maxItems from selector schema"
-git push heroku main
+AI Slack bot that answers teammates' questions about Takeoff Monkey's internal tech stack (Heroku bots, Zapier flows, AWS Lambdas, Monday automations, etc). Backed by a library of HTML "skill" files in [`docs/skills/`](docs/skills/). Hosted on Heroku.
 
-heroku restart -a slack-help-bot
+The bot ([app2.py](app2.py)) is separate from the Ewing note updater ([app.py](app.py)) — both share this repo but each runs as its own Heroku app/process.
 
+## Project structure
+
+```
+app2.py                  ← the AI help bot (this project)
+app.py                   ← legacy: Ewing note updater
+docs/skills/             ← knowledge base — one HTML file per system
+  ├── _manifest.json     ← machine-readable index (regenerated)
+  ├── index.html         ← human-browsable index (regenerated)
+  └── *.html             ← individual skills
+build_manifest.py        ← regenerates _manifest.json
+build_index.py           ← regenerates index.html
+Procfile                 ← Heroku processes: worker (note updater), ai_bot (help bot)
+requirements.txt         ← Python deps
+.python-version          ← Python 3.13
+```
+
+## Deploy a code change
+
+```bash
+git add <files>
+git commit -m "message"
+git push heroku main         # deploy to Heroku
+git push origin main         # push to GitHub
+```
+
+Heroku rebuilds and auto-restarts after each push. Watch logs to confirm:
+
+```bash
 heroku logs --tail -a slack-help-bot
+```
+
+## Watch / debug
+
+```bash
+heroku logs --tail -a slack-help-bot           # live tail (Ctrl+C to stop)
+heroku logs -n 200 -a slack-help-bot           # last 200 lines
+heroku ps -a slack-help-bot                    # process status
+heroku restart -a slack-help-bot               # force restart
+heroku run -a slack-help-bot python            # interactive Python REPL on the dyno
+heroku run -a slack-help-bot bash              # interactive shell on the dyno
+```
+
+## Manage env vars
+
+```bash
+heroku config -a slack-help-bot                # list all
+heroku config:set KEY=value -a slack-help-bot  # set one (auto-restarts dyno)
+heroku config:unset KEY -a slack-help-bot      # remove one
+```
+
+Bot expects these env vars on Heroku:
+
+| Var | Purpose |
+|---|---|
+| `SLACK_BOT_TOKEN` | `xoxb-…` — from Slack app's OAuth & Permissions |
+| `SLACK_APP_TOKEN` | `xapp-…` — from Slack app's Basic Information |
+| `ANTHROPIC_API_KEY` | `sk-ant-…` |
+| `ALLOWED_USERS` | Comma-separated Slack user IDs (e.g. `U01XXX,U02YYY`). If unset, bot responds to everyone (production). If set, only those users get answers — use for testing. |
+| `SKILL_DOCS_BASE_URL` | e.g. `https://takeoff-monkey.github.io/slack-help-bot/skills` — if set, Sources footer links to the HTML docs. If unset, sources shown as plain text. |
+
+## Edit the knowledge base
+
+Skills are HTML files in `docs/skills/`. To add or modify one:
+
+1. Copy [`_template.html`](docs/skills/_template.html) or an existing skill as a starting point. Fill in the `<meta>` tags in the `<head>` — those drive retrieval.
+2. Regenerate the manifest + index:
+   ```bash
+   python3 build_manifest.py
+   python3 build_index.py
+   ```
+3. Commit and deploy as normal.
+
+The bot reads `_manifest.json` at startup, so it picks up new skills after the next deploy.
+
+## Toggle private ↔ live
+
+```bash
+heroku config:set ALLOWED_USERS=U01YOURID -a slack-help-bot   # only you can use it
+heroku config:unset ALLOWED_USERS -a slack-help-bot           # open to whole workspace
+```
+
+The bot logs `private mode` or `open mode` on startup so you can confirm in the logs.
+
+## Scale Heroku processes
+
+The Procfile defines two process types. This Heroku app should only run `ai_bot`:
+
+```bash
+heroku ps:scale ai_bot=1 worker=0 -a slack-help-bot
+```
+
+(The Ewing note updater's separate Heroku app does the opposite.)
+
+## Inspect what the bot sees
+
+Quick way to verify the bot's identity / tokens / Slack connection from the dyno:
+
+```bash
+heroku run -a slack-help-bot python
+```
+
+then in the REPL:
+
+```python
+from slack_sdk import WebClient
+import os
+print(WebClient(token=os.environ['SLACK_BOT_TOKEN']).auth_test().data)
+```
+
+Returns the workspace, bot username, user ID, and app ID — useful when DMs aren't reaching the bot.
