@@ -101,6 +101,13 @@ ANSWER_SYSTEM = """You are an AI assistant for Takeoff Monkey, a takeoff/estimat
 
 Ground every answer in the skill documentation provided in the user message. Be concise (Slack-appropriate length — typically 2–8 sentences, or a short bulleted list). When you reference a specific system, name it. If the provided skills don't cover the question, say so directly — don't guess or pad.
 
+Formatting — your output is rendered in Slack, which uses mrkdwn (not standard Markdown). Use only these conventions:
+- Inline code or identifiers: backticks, like `job-number` or `#12345!`
+- Bold: single asterisks, like *important* (NOT **double asterisks**)
+- Italics: single underscores, like _example_
+- Bullets: start each line with "- "
+Do not use double-asterisk bold, # / ## headings, or [text](url) link syntax — Slack will display them as literal characters instead of rendering them.
+
 Escalation pointer: most systems are owned by Tommy Lather; mention escalating to Tommy if the user is reporting a break and the skill doesn't name a different owner."""
 
 
@@ -234,8 +241,28 @@ def is_allowed(user_id: str | None) -> bool:
     return user_id in ALLOWED_USERS
 
 
+THINKING_PLACEHOLDER = ":hourglass_flowing_sand: _Thinking…_"
+
+
+def reply_with_thinking_indicator(question, channel, thread_ts, say, client, logger):
+    """Post a 'Thinking…' placeholder, generate the answer, then edit the
+    placeholder to contain the real answer. Falls back to a fresh message
+    if chat.update fails for any reason."""
+    placeholder = say(text=THINKING_PLACEHOLDER, thread_ts=thread_ts)
+    placeholder_ts = placeholder.get("ts") if placeholder else None
+    answer = respond_to_question(question, logger)
+    if not placeholder_ts:
+        say(text=answer, thread_ts=thread_ts)
+        return
+    try:
+        client.chat_update(channel=channel, ts=placeholder_ts, text=answer)
+    except Exception:
+        logger.exception("chat_update failed; posting answer as a new message")
+        say(text=answer, thread_ts=thread_ts)
+
+
 @app.event("app_mention")
-def handle_app_mention(event, say, logger):
+def handle_app_mention(event, say, client, logger):
     if event.get("bot_id"):
         return
     user_id = event.get("user")
@@ -245,12 +272,13 @@ def handle_app_mention(event, say, logger):
     question = strip_mention(event.get("text", ""))
     thread_ts = event.get("thread_ts") or event.get("ts")
     logger.info(f"app_mention question: {question!r}")
-    answer = respond_to_question(question, logger)
-    say(text=answer, thread_ts=thread_ts)
+    reply_with_thinking_indicator(
+        question, event["channel"], thread_ts, say, client, logger
+    )
 
 
 @app.event("message")
-def handle_message(event, say, logger):
+def handle_message(event, say, client, logger):
     if event.get("channel_type") != "im":
         return
     if event.get("bot_id") or event.get("subtype") == "bot_message":
@@ -261,8 +289,9 @@ def handle_message(event, say, logger):
         return
     question = strip_mention(event.get("text", ""))
     logger.info(f"DM question: {question!r}")
-    answer = respond_to_question(question, logger)
-    say(text=answer)
+    reply_with_thinking_indicator(
+        question, event["channel"], None, say, client, logger
+    )
 
 
 if __name__ == "__main__":
