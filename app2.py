@@ -50,6 +50,12 @@ ALLOWED_USERS = {
     if uid.strip()
 }
 
+# Base URL where the skill HTML files are publicly served (e.g. GitHub Pages).
+# If set, the bot's "Sources" footer links to the actual HTML docs; if unset,
+# sources are shown as plain backticked skill IDs.
+# Example: https://takeoff-monkey.github.io/slack-help-bot/skills
+SKILL_DOCS_BASE_URL = os.environ.get("SKILL_DOCS_BASE_URL", "").rstrip("/")
+
 MODEL = "claude-opus-4-7"
 MAX_SKILLS_PER_QUESTION = 5
 MAX_SLACK_MESSAGE_CHARS = 3800
@@ -285,8 +291,14 @@ def respond_to_question(question: str, history: list[dict], logger) -> str:
         logger.info(f"Selected skills: {skill_ids} (history turns: {len(history)})")
         answer = answer_question(question, skill_ids, history)
         if skill_ids:
-            footer = "\n\n_Sources: " + ", ".join(f"`{sid}`" for sid in skill_ids) + "_"
-            answer += footer
+            if SKILL_DOCS_BASE_URL:
+                source_fmts = [
+                    f"<{SKILL_DOCS_BASE_URL}/{SKILL_FILE_BY_ID[sid]}|{sid}>"
+                    for sid in skill_ids
+                ]
+            else:
+                source_fmts = [f"`{sid}`" for sid in skill_ids]
+            answer += "\n\n_Sources: " + ", ".join(source_fmts) + "_"
         if len(answer) > MAX_SLACK_MESSAGE_CHARS:
             answer = answer[: MAX_SLACK_MESSAGE_CHARS - 20] + "… _(truncated)_"
         return answer
