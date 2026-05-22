@@ -151,7 +151,6 @@ def select_skills(question: str) -> list[str]:
                         "skill_ids": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "maxItems": MAX_SKILLS_PER_QUESTION,
                         }
                     },
                     "required": ["skill_ids"],
@@ -163,7 +162,8 @@ def select_skills(question: str) -> list[str]:
     text = next(b.text for b in response.content if b.type == "text")
     payload = json.loads(text)
     picked = payload.get("skill_ids", [])
-    return [sid for sid in picked if sid in VALID_SKILL_IDS]
+    valid = [sid for sid in picked if sid in VALID_SKILL_IDS]
+    return valid[:MAX_SKILLS_PER_QUESTION]
 
 
 def answer_question(question: str, skill_ids: list[str]) -> str:
