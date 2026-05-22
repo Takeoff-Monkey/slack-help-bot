@@ -60,6 +60,17 @@ MANIFEST_PATH = SKILLS_DIR / "_manifest.json"
 anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 app = App(token=SLACK_BOT_TOKEN)
 
+# Fetch the bot's own user ID at startup so we can identify our own messages
+# when pulling conversation history.
+try:
+    BOT_USER_ID = app.client.auth_test()["user_id"]
+    print(f"Bot user ID: {BOT_USER_ID}")
+except Exception as e:
+    print(f"Warning: could not fetch bot user ID at startup ({e})")
+    BOT_USER_ID = None
+
+MAX_HISTORY_MESSAGES = 10
+
 SLACK_MENTION_RE = re.compile(r"<@[A-Z0-9]+>")
 STYLE_BLOCK_RE = re.compile(r"<style[^>]*>.*?</style>", re.IGNORECASE | re.DOTALL)
 SCRIPT_BLOCK_RE = re.compile(r"<script[^>]*>.*?</script>", re.IGNORECASE | re.DOTALL)
@@ -91,7 +102,7 @@ SELECTOR_SYSTEM = f"""You help an AI Slack bot pick which of Takeoff Monkey's in
 
 Each skill is one entry below describing a system, automation, lambda, board automation, or tool. The bot will read the full HTML for whichever skills you pick.
 
-Pick at most {MAX_SKILLS_PER_QUESTION} skill IDs that look directly relevant to the question. Prefer fewer, more-relevant skills over more, weakly-related ones. If the question is conversational, generic, or unrelated to the tech stack (e.g. "hi", "what can you do"), return an empty list — the bot has a fallback for that case.
+Pick at most {MAX_SKILLS_PER_QUESTION} skill IDs that look directly relevant to the LATEST user message. If the conversation contains prior turns, use them as context for what the user is asking about — follow-ups like "what's wrong with it?" or "what about the other one?" only make sense given prior turns. If the question is conversational, generic, or unrelated to the tech stack (e.g. "hi", "what can you do"), return an empty list — the bot has a fallback for that case.
 
 Available skills:
 {INDEX_JSON}"""
@@ -137,7 +148,63 @@ def load_skill_body(skill_id: str) -> str | None:
     return clean_skill_for_llm(html)
 
 
-def select_skills(question: str) -> list[str]:
+SOURCES_FOOTER_RE = re.compile(r"\n\n_Sources:.*$", re.DOTALL)
+
+
+def get_conversation_history(channel: str, thread_ts: str | None, current_ts: str, logger) -> list[dict]:
+    """Fetch prior turns from this Slack conversation, oldest first, formatted
+    as Claude messages. Excludes the current message (caller appends it).
+    Returns [] on any failure — the bot still works without history."""
+    try:
+        if thread_ts:
+            resp = app.client.conversations_replies(
+                channel=channel, ts=thread_ts, limit=MAX_HISTORY_MESSAGES + 1
+            )
+            raw = resp.get("messages", [])
+        else:
+            resp = app.client.conversations_history(
+                channel=channel, limit=MAX_HISTORY_MESSAGES + 1
+            )
+            raw = list(reversed(resp.get("messages", [])))
+    except Exception:
+        logger.exception("Failed to fetch conversation history (continuing without context)")
+        return []
+
+    history = []
+    for msg in raw:
+        if msg.get("ts") == current_ts:
+            continue
+        text = (msg.get("text") or "").strip()
+        if not text or text == THINKING_PLACEHOLDER:
+            continue
+        is_bot = msg.get("user") == BOT_USER_ID or bool(msg.get("bot_id"))
+        if is_bot:
+            text = SOURCES_FOOTER_RE.sub("", text)
+        else:
+            text = strip_mention(text)
+        if not text:
+            continue
+        history.append({"role": "assistant" if is_bot else "user", "content": text})
+
+    return normalize_message_history(history)[-MAX_HISTORY_MESSAGES:]
+
+
+def normalize_message_history(messages: list[dict]) -> list[dict]:
+    """Claude requires messages to alternate user/assistant and start with
+    user. Drop leading assistant messages; merge consecutive same-role."""
+    while messages and messages[0]["role"] != "user":
+        messages = messages[1:]
+    merged: list[dict] = []
+    for msg in messages:
+        if merged and merged[-1]["role"] == msg["role"]:
+            merged[-1]["content"] += "\n\n" + msg["content"]
+        else:
+            merged.append({"role": msg["role"], "content": msg["content"]})
+    return merged
+
+
+def select_skills(question: str, history: list[dict]) -> list[str]:
+    messages = normalize_message_history(history + [{"role": "user", "content": question}])
     response = anthropic_client.messages.create(
         model=MODEL,
         max_tokens=512,
@@ -148,7 +215,7 @@ def select_skills(question: str) -> list[str]:
                 "cache_control": {"type": "ephemeral"},
             }
         ],
-        messages=[{"role": "user", "content": question}],
+        messages=messages,
         output_config={
             "format": {
                 "type": "json_schema",
@@ -173,7 +240,7 @@ def select_skills(question: str) -> list[str]:
     return valid[:MAX_SKILLS_PER_QUESTION]
 
 
-def answer_question(question: str, skill_ids: list[str]) -> str:
+def answer_question(question: str, skill_ids: list[str], history: list[dict]) -> str:
     if skill_ids:
         bodies = []
         for sid in skill_ids:
@@ -184,9 +251,12 @@ def answer_question(question: str, skill_ids: list[str]) -> str:
     else:
         skill_context = "(no skills selected — the question may be general or unrelated to the tech stack)"
 
-    user_message = (
+    current_user_message = (
         f"Teammate's question:\n{question}\n\n"
         f"Relevant skill documentation:\n{skill_context}"
+    )
+    messages = normalize_message_history(
+        history + [{"role": "user", "content": current_user_message}]
     )
 
     with anthropic_client.messages.stream(
@@ -195,7 +265,7 @@ def answer_question(question: str, skill_ids: list[str]) -> str:
         thinking={"type": "adaptive"},
         output_config={"effort": "high"},
         system=ANSWER_SYSTEM,
-        messages=[{"role": "user", "content": user_message}],
+        messages=messages,
     ) as stream:
         final = stream.get_final_message()
 
@@ -205,15 +275,15 @@ def answer_question(question: str, skill_ids: list[str]) -> str:
     return "Sorry, I couldn't generate a response."
 
 
-def respond_to_question(question: str, logger) -> str:
+def respond_to_question(question: str, history: list[dict], logger) -> str:
     question = question.strip()
     if not question:
         return ":wave: Ask me anything about Takeoff Monkey's internal tech stack — Heroku bots, Zapier flows, AWS lambdas, Monday automations, etc."
 
     try:
-        skill_ids = select_skills(question)
-        logger.info(f"Selected skills: {skill_ids}")
-        answer = answer_question(question, skill_ids)
+        skill_ids = select_skills(question, history)
+        logger.info(f"Selected skills: {skill_ids} (history turns: {len(history)})")
+        answer = answer_question(question, skill_ids, history)
         if skill_ids:
             footer = "\n\n_Sources: " + ", ".join(f"`{sid}`" for sid in skill_ids) + "_"
             answer += footer
@@ -244,13 +314,13 @@ def is_allowed(user_id: str | None) -> bool:
 THINKING_PLACEHOLDER = ":hourglass_flowing_sand: _Thinking…_"
 
 
-def reply_with_thinking_indicator(question, channel, thread_ts, say, client, logger):
+def reply_with_thinking_indicator(question, channel, thread_ts, history, say, client, logger):
     """Post a 'Thinking…' placeholder, generate the answer, then edit the
     placeholder to contain the real answer. Falls back to a fresh message
     if chat.update fails for any reason."""
     placeholder = say(text=THINKING_PLACEHOLDER, thread_ts=thread_ts)
     placeholder_ts = placeholder.get("ts") if placeholder else None
-    answer = respond_to_question(question, logger)
+    answer = respond_to_question(question, history, logger)
     if not placeholder_ts:
         say(text=answer, thread_ts=thread_ts)
         return
@@ -270,10 +340,13 @@ def handle_app_mention(event, say, client, logger):
         logger.info(f"Ignoring app_mention from non-allowlisted user {user_id}")
         return
     question = strip_mention(event.get("text", ""))
-    thread_ts = event.get("thread_ts") or event.get("ts")
+    channel = event["channel"]
+    current_ts = event["ts"]
+    thread_ts = event.get("thread_ts") or current_ts
     logger.info(f"app_mention question: {question!r}")
+    history = get_conversation_history(channel, thread_ts, current_ts, logger)
     reply_with_thinking_indicator(
-        question, event["channel"], thread_ts, say, client, logger
+        question, channel, thread_ts, history, say, client, logger
     )
 
 
@@ -288,9 +361,12 @@ def handle_message(event, say, client, logger):
         logger.info(f"Ignoring DM from non-allowlisted user {user_id}")
         return
     question = strip_mention(event.get("text", ""))
+    channel = event["channel"]
+    current_ts = event["ts"]
     logger.info(f"DM question: {question!r}")
+    history = get_conversation_history(channel, None, current_ts, logger)
     reply_with_thinking_indicator(
-        question, event["channel"], None, say, client, logger
+        question, channel, None, history, say, client, logger
     )
 
 
