@@ -162,23 +162,19 @@ def load_skill_body(skill_id: str) -> str | None:
 SOURCES_FOOTER_RE = re.compile(r"\n\n_Sources:.*$", re.DOTALL)
 
 
-def get_conversation_history(channel: str, thread_ts: str | None, current_ts: str, logger) -> list[dict]:
-    """Fetch prior turns from this Slack conversation, oldest first, formatted
-    as Claude messages. Excludes the current message (caller appends it).
+def get_conversation_history(channel: str, thread_ts: str, current_ts: str, logger) -> list[dict]:
+    """Fetch prior turns from this Slack *thread*, oldest first, formatted as
+    Claude messages. Excludes the current message (caller appends it). History
+    is always scoped to the thread, so each thread is an independent
+    conversation — no context bleeds across threads or across separate DMs.
     Returns [] on any failure — the bot still works without history."""
     try:
-        if thread_ts:
-            resp = app.client.conversations_replies(
-                channel=channel, ts=thread_ts, limit=MAX_HISTORY_MESSAGES + 1
-            )
-            raw = resp.get("messages", [])
-        else:
-            resp = app.client.conversations_history(
-                channel=channel, limit=MAX_HISTORY_MESSAGES + 1
-            )
-            raw = list(reversed(resp.get("messages", [])))
+        resp = app.client.conversations_replies(
+            channel=channel, ts=thread_ts, limit=MAX_HISTORY_MESSAGES + 1
+        )
+        raw = resp.get("messages", [])
     except Exception:
-        logger.exception("Failed to fetch conversation history (continuing without context)")
+        logger.exception("Failed to fetch thread history (continuing without context)")
         return []
 
     history = []
@@ -380,10 +376,16 @@ def handle_message(event, say, client, logger):
     question = strip_mention(event.get("text", ""))
     channel = event["channel"]
     current_ts = event["ts"]
+    # Thread the reply instead of posting a flat DM. A brand-new top-level DM
+    # starts its own thread (rooted at this message); a message inside an
+    # existing thread continues it. Either way history is scoped to the thread,
+    # so a fresh top-level DM is a fresh conversation — the bot no longer drags
+    # every past DM into context.
+    thread_ts = event.get("thread_ts") or current_ts
     logger.info(f"DM question: {question!r}")
-    history = get_conversation_history(channel, None, current_ts, logger)
+    history = get_conversation_history(channel, thread_ts, current_ts, logger)
     reply_with_thinking_indicator(
-        question, channel, None, history, say, client, logger
+        question, channel, thread_ts, history, say, client, logger
     )
 
 
