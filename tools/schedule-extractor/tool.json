@@ -1,0 +1,35 @@
+{
+  "name": "schedule-extractor",
+  "version": "1",
+  "description": "Extract plant legends and material schedules from a construction/landscape PDF into an Excel workbook (one sheet per detected schedule).",
+  "when_to_use": "Use when the user attaches a construction, landscape, or site PDF and asks to pull plant legends, material schedules, planting tables, or similar tabular schedules out of it into a spreadsheet. Do NOT use for free-text questions or for PDFs with no schedule/legend tables.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "input_file": {
+        "type": "string",
+        "description": "Handle of the attached PDF to process, e.g. \"file_1\". Must be one of the file handles listed in the conversation."
+      },
+      "ignore_first_column": {
+        "type": "boolean",
+        "default": true,
+        "description": "Drop the first table column (often a column of plant symbols/codes rather than data). Set false to keep it."
+      },
+      "skip_pages": {
+        "type": "array",
+        "items": { "type": "integer" },
+        "default": [],
+        "description": "Zero-based page indices to skip (e.g. cover sheets). Empty means scan every page."
+      }
+    },
+    "required": ["input_file"],
+    "additionalProperties": false
+  },
+  "accepts": { "file_types": ["pdf"], "max_files": 1 },
+  "output": "An .xlsx workbook with one sheet per detected schedule (named \"Page N, Schedule M\"), plus a short text summary of how many schedules were found.",
+  "entrypoint": {
+    "local": { "type": "subprocess", "cmd": ["run.py"], "cwd": "tools/schedule-extractor" },
+    "lambda": { "type": "lambda", "function_name": "tm-tool-schedule-extractor" }
+  },
+  "timeout_seconds": 300
+}

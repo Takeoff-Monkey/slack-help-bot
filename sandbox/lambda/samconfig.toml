@@ -1,0 +1,14 @@
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "tm-sandbox-runcode"
+resolve_s3 = true
+s3_prefix = "tm-sandbox-runcode"
+resolve_image_repos = true
+region = "us-east-1"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+parameter_overrides = "ScratchBucket=\"help-bot-code-scratchpad\" SandboxTimeoutSeconds=\"120\""
+
+[default.global.parameters]
+region = "us-east-1"

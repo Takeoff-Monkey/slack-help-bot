@@ -1,0 +1,60 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  schedule-extractor tool as a synchronous (request/response) Lambda for the Takeoff Monkey
+  Slack bot. Reads a PDF from the scratch S3 bucket, extracts plant legends / material
+  schedules with PyMuPDF + Textract, writes an .xlsx back to S3, returns a JSON result.
+
+Parameters:
+  ScratchBucket:
+    Type: String
+    Description: S3 bucket the bot stages inputs to and reads outputs from.
+  OpenAIApiKey:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: Only needed if GPT_CLEANUP is enabled in main2.py. Leave blank otherwise.
+
+Globals:
+  Function:
+    Timeout: 300
+    MemorySize: 2048
+
+Resources:
+  ScheduleExtractorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: tm-tool-schedule-extractor
+      PackageType: Image
+      Architectures: [x86_64]
+      Environment:
+        Variables:
+          SCRATCH_S3_BUCKET: !Ref ScratchBucket
+          OPENAI_API_KEY: !Ref OpenAIApiKey
+          # NOTE: do NOT set AWS_DEFAULT_REGION here — it's a reserved Lambda runtime var
+          # (the runtime already provides AWS_REGION / AWS_DEFAULT_REGION = the function's
+          # region), and Lambda rejects any attempt to define it.
+      Policies:
+        # Textract (extraction) — no static keys; the execution role grants it.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - textract:AnalyzeDocument
+                - textract:DetectDocumentText
+              Resource: "*"
+        # Scratch bucket only (least privilege) — read inputs, write outputs.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+              Resource: !Sub "arn:aws:s3:::${ScratchBucket}/*"
+    Metadata:
+      Dockerfile: lambda/Dockerfile
+      DockerContext: ..          # the tool dir (so main2.py + requirements.txt are in scope)
+      DockerTag: latest
+
+Outputs:
+  FunctionName:
+    Value: !Ref ScheduleExtractorFunction
+    Description: Set this as the bot's tool.json entrypoint.lambda.function_name (already tm-tool-schedule-extractor).

@@ -1,0 +1,9 @@
+PyMuPDF
+pandas
+boto3
+Pillow
+amazon-textract-caller
+amazon-textract-prettyprinter
+openai
+python-dotenv
+xlsxwriter

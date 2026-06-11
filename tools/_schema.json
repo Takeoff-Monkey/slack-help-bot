@@ -1,0 +1,54 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Takeoff Monkey bot tool manifest",
+  "description": "Schema every tools/<name>/tool.json must satisfy. tool_registry.py validates against this at startup and skips (does not crash on) a manifest that fails.",
+  "type": "object",
+  "required": ["name", "description", "when_to_use", "input_schema", "output", "entrypoint"],
+  "additionalProperties": true,
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]+$",
+      "description": "Must equal the tool's directory name."
+    },
+    "version": { "type": "string" },
+    "description": { "type": "string", "minLength": 1 },
+    "when_to_use": { "type": "string", "minLength": 1 },
+    "input_schema": {
+      "type": "object",
+      "description": "JSON Schema handed to Anthropic as the tool's input_schema. Must declare an object with an 'input_file' (or files) reference where a file is required.",
+      "required": ["type", "properties"]
+    },
+    "accepts": {
+      "type": "object",
+      "properties": {
+        "file_types": { "type": "array", "items": { "type": "string" } },
+        "max_files": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "output": { "type": "string", "minLength": 1 },
+    "entrypoint": {
+      "type": "object",
+      "properties": {
+        "local": {
+          "type": "object",
+          "required": ["type"],
+          "properties": {
+            "type": { "const": "subprocess" },
+            "cmd": { "type": "array", "items": { "type": "string" } },
+            "cwd": { "type": "string" }
+          }
+        },
+        "lambda": {
+          "type": "object",
+          "required": ["type", "function_name"],
+          "properties": {
+            "type": { "const": "lambda" },
+            "function_name": { "type": "string" }
+          }
+        }
+      }
+    },
+    "timeout_seconds": { "type": "integer", "minimum": 1 }
+  }
+}

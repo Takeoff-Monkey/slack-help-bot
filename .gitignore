@@ -11,7 +11,22 @@ env/
 
 # Ignore secrets and credentials
 .env
+.envrc
+.claude/settings.json
+.claude/work-key.sh
 g-sheets-experiments-c48bb50fa78e.json
+
+# Per-tool / sandbox secrets and virtualenvs (explicit, even though the rules above
+# already match these anywhere in the tree — defense in depth so a tool's .env is never
+# pushed). Tool/sandbox source code itself stays tracked.
+tools/**/.env
+tools/**/.venv/
+tools/**/__pycache__/
+sandbox/.venv/
+sandbox/**/__pycache__/
+
+# AWS SAM build output (container Lambdas)
+.aws-sam/
 
 # Explicitly track these required files
 !app.py

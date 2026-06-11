@@ -1,0 +1,7 @@
+# Libraries available to model-written code in the run_code sandbox.
+# Kept deliberately small: stdlib + the PDF/data essentials the bot's fallback needs.
+# These are installed in sandbox/.venv and are NOT part of the bot's own environment.
+PyMuPDF
+pandas
+Pillow
+openpyxl
