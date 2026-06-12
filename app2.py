@@ -368,11 +368,12 @@ def _looks_like_action(question: str) -> bool:
     return any(name in q or name.replace("-", " ") in q for name in TOOLS)
 
 
-def respond_to_question(question, history, staging, prefetched_skill_ids, progress, logger) -> "agent_loop.AgentResult":
+def respond_to_question(question, history, staging, prefetched_skill_ids, progress, on_artifacts, logger) -> "agent_loop.AgentResult":
     """Route a turn. When `staging` is not None we're on the *action* path (a file was
     attached, a tool was named, or the selector classified intent as "action") → run the
     tool-use loop. Otherwise it's the unchanged retrieval Q&A path, reusing the skills the
     caller already fetched (`prefetched_skill_ids`) so the selector isn't called twice.
+    `on_artifacts` is the callback the loop fires to upload files the moment they're produced.
     Always returns an AgentResult so the caller treats both paths uniformly."""
     question = question.strip()
     if not question and not (staging and staging.files):
@@ -383,7 +384,7 @@ def respond_to_question(question, history, staging, prefetched_skill_ids, progre
     try:
         if staging is not None:
             return agent_loop.run_agent(
-                anthropic_client, question, history, staging, TOOLS, progress, logger
+                anthropic_client, question, history, staging, TOOLS, progress, on_artifacts, logger
             )
 
         skill_ids = prefetched_skill_ids if prefetched_skill_ids is not None else select_skills(question, history)
@@ -466,8 +467,19 @@ def reply_with_thinking_indicator(question, channel, thread_ts, files, history, 
         if action else None
     )
 
+    # Upload produced files the moment a tool emits them (deduped by storage ref), so the
+    # user always gets output even if a later step errors or the loop hits its cap.
+    uploaded_refs: set = set()
+
+    def emit_artifacts(arts):
+        if staging is None or not arts:
+            return
+        slack_files.upload_artifacts(client, channel, thread_ts, arts, staging, logger, seen=uploaded_refs)
+
     try:
-        result = respond_to_question(question, history, staging, prefetched_skills, progress, logger)
+        result = respond_to_question(
+            question, history, staging, prefetched_skills, progress, emit_artifacts, logger
+        )
         text = result.text or "Done."
         if placeholder_ts:
             try:
@@ -478,9 +490,17 @@ def reply_with_thinking_indicator(question, channel, thread_ts, files, history, 
         else:
             say(text=text, thread_ts=thread_ts)
 
+        # Final sweep — uploads anything not already delivered incrementally (no-op if all were).
         if staging is not None and result.artifacts:
-            n = slack_files.upload_artifacts(client, channel, thread_ts, result.artifacts, staging, logger)
-            logger.info("Uploaded %d artifact(s) to thread", n)
+            slack_files.upload_artifacts(
+                client, channel, thread_ts, result.artifacts, staging, logger, seen=uploaded_refs
+            )
+
+        # Optional: persist the step-by-step trace for debugging (off unless TRACE_TO_S3 set).
+        if staging is not None and result.trace and os.environ.get("TRACE_TO_S3"):
+            slack_files.write_trace(
+                staging, "\n".join(result.trace), f"{thread_ts}.txt", logger
+            )
     finally:
         if staging is not None:
             slack_files.cleanup([staging], logger)

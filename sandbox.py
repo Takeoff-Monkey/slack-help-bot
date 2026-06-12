@@ -24,6 +24,7 @@ import subprocess
 import uuid
 from pathlib import Path
 
+import tool_runner
 from tool_runner import ToolInvocationResult
 
 SANDBOX_DIR = Path(__file__).parent / "sandbox"
@@ -142,8 +143,10 @@ def _run_lambda(code: str, input_key: str | None, staging, logger) -> ToolInvoca
     payload = {"code": code, "input_path": input_key, "work_dir": out_prefix,
                "bucket": staging.bucket, "backend": "lambda"}
     try:
-        import boto3
-        client = boto3.client("lambda")
+        # read_timeout must exceed the sandbox function's own timeout (130s) so we wait for
+        # its real result; retries OFF so a hanging run isn't re-invoked into a multi-minute
+        # stall (the bug that previously blocked the whole turn). See tool_runner.lambda_client.
+        client = tool_runner.lambda_client(SANDBOX_TIMEOUT + 40)
         resp = client.invoke(FunctionName=fn, InvocationType="RequestResponse",
                              Payload=json.dumps(payload).encode("utf-8"))
     except Exception as err:

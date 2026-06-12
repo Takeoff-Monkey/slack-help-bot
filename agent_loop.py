@@ -31,12 +31,19 @@ MAX_TOKENS = 2048
 # same way as Q&A replies.
 ACTION_SYSTEM = """You are an AI assistant for Takeoff Monkey that can *perform operations* for teammates, not just answer questions. You have specialized tools plus a `run_code` sandbox.
 
-How to work:
-- Prefer a registered tool whenever one matches the request or is named explicitly — they are specialized and reliable. Use `run_code` only for steps no registered tool covers.
-- A request can need several steps (e.g. run a tool on a file, then do something extra with `run_code`). Do the tool steps first, then the leftover work.
-- Files the user attached are listed with handles like `file_1`. Pass those handles to tools' `input_file` fields. In `run_code`, the attached file you name is available at the path in env `INPUT_FILE`, and anything you write to env `OUTPUT_DIR` is uploaded back to the user automatically.
-- When you're done, write a short summary of what you did. Do NOT paste raw tool JSON, and do NOT tell the user to look for files on disk — produced files are uploaded to the thread for them.
-- If a tool returns an error, read it, and either fix the inputs and retry, try `run_code`, or explain plainly what went wrong.
+Core rule — do exactly what was asked, then stop:
+- Most requests are satisfied by ONE tool call. Pick the single registered tool that matches the request, call it once, and when it returns status "ok" you are DONE.
+- Do NOT call more tools to double-check, re-run, reformat, validate, or "improve" a result that already succeeded. A successful tool result IS the finished work.
+- Only take an additional step if the user EXPLICITLY asked for a separate operation that the tool did not perform (e.g. "extract the schedules AND highlight every 'landscape'"). If they didn't ask for it, don't do it.
+- Use `run_code` ONLY when no registered tool covers what the user explicitly asked for. Never use it to post-process a tool's output unless the user requested that post-processing.
+
+Files & output:
+- Attached files are listed with handles like `file_1`. Pass those handles to a tool's `input_file` field. In `run_code`, the file you name is at env `INPUT_FILE`, and anything you write to env `OUTPUT_DIR` is uploaded to the thread automatically.
+- Every file a tool or `run_code` produces is uploaded to the Slack thread for the user automatically. Never re-create, re-deliver, or tell the user where to find a file.
+- When finished, reply with one or two plain sentences summarizing what you did. Do NOT paste raw tool JSON.
+
+Errors:
+- If a tool returns an error, you may retry ONCE with corrected inputs, or explain the problem plainly. Do not keep retrying or switch to `run_code` to brute-force around a failure.
 
 Formatting — your output is rendered in Slack mrkdwn (NOT standard Markdown). Use only:
 - Inline code/identifiers: backticks, like `file_1`
@@ -52,6 +59,7 @@ class AgentResult:
     text: str
     artifacts: list = field(default_factory=list)
     work_dirs: list = field(default_factory=list)  # for cleanup (paths/prefixes), never shown
+    trace: list = field(default_factory=list)       # human-readable step-by-step log
 
 
 def _normalize(messages: list[dict]) -> list[dict]:
@@ -72,9 +80,22 @@ def _text_of(message) -> str:
     return "".join(b.text for b in message.content if getattr(b, "type", None) == "text").strip()
 
 
-def run_agent(client, question, history, staging, tool_specs, progress, logger) -> AgentResult:
-    """Drive the tool-use loop. `progress(msg)` updates the Slack placeholder; `client` is
-    the shared anthropic client; `staging` carries the attached files."""
+def _short(s, n: int = 300) -> str:
+    s = str(s).replace("\n", " ")
+    return s if len(s) <= n else s[:n] + "…"
+
+
+def run_agent(client, question, history, staging, tool_specs, progress, on_artifacts, logger) -> AgentResult:
+    """Drive the tool-use loop.
+
+    - progress(msg): updates the Slack 'Thinking…' placeholder with a status line.
+    - on_artifacts(list): called the MOMENT a tool produces files, so they're uploaded to the
+      thread immediately. This guarantees the user gets output even if a later step errors or
+      the loop hits its cap — the file is already delivered.
+
+    Every step is logged at INFO and appended to a human-readable `trace` (returned on the
+    AgentResult) so the run isn't a black box.
+    """
     tool_defs = tool_registry.anthropic_tool_defs(tool_specs) + [sandbox.run_code_tool_def()]
 
     attach_note = slack_files.attachments_for_prompt(staging)
@@ -83,6 +104,21 @@ def run_agent(client, question, history, staging, tool_specs, progress, logger) 
 
     artifacts: list = []
     work_dirs: list = []
+    trace: list = [f"USER: {question!r} | files={[f.handle for f in staging.files]}"]
+
+    def emit(arts):
+        """Accumulate + immediately upload artifacts a tool just produced."""
+        if not arts:
+            return
+        artifacts.extend(arts)
+        if on_artifacts:
+            try:
+                on_artifacts(arts)
+            except Exception:
+                logger.exception("on_artifacts callback failed (continuing)")
+
+    logger.info("agent: start | %d tool(s) | %d file(s) | q=%r",
+                len(tool_defs), len(staging.files), _short(question, 120))
 
     for step in range(MAX_TOOL_ITERATIONS):
         msg = client.messages.create(
@@ -97,14 +133,23 @@ def run_agent(client, question, history, staging, tool_specs, progress, logger) 
         # matching tool_result turn.
         messages.append({"role": "assistant", "content": msg.content})
 
+        say = _text_of(msg)
+        tool_calls = [b for b in msg.content if getattr(b, "type", None) == "tool_use"]
+        logger.info("agent: step %d/%d | stop=%s | says=%r | calls=%s",
+                    step + 1, MAX_TOOL_ITERATIONS, msg.stop_reason, _short(say, 160),
+                    [b.name for b in tool_calls])
+        if say:
+            trace.append(f"ASSISTANT[{step + 1}]: {say}")
+
         if msg.stop_reason != "tool_use":
-            return AgentResult(text=_text_of(msg) or "Done.", artifacts=artifacts, work_dirs=work_dirs)
+            trace.append(f"DONE: {say}")
+            logger.info("agent: done after %d step(s)", step + 1)
+            return AgentResult(text=say or "Done.", artifacts=artifacts, work_dirs=work_dirs, trace=trace)
 
         tool_results = []
-        for block in msg.content:
-            if getattr(block, "type", None) != "tool_use":
-                continue
+        for block in tool_calls:
             name = block.name
+            trace.append(f"CALL[{step + 1}] {name}({_short(json.dumps(block.input), 300)})")
             if name == "run_code":
                 progress("Running a custom step…")
                 res = sandbox.run_code(block.input, staging, logger)
@@ -113,7 +158,12 @@ def run_agent(client, question, history, staging, tool_specs, progress, logger) 
                 res = tool_runner.run_tool(tool_specs[name], block.input, staging, logger)
             else:
                 res = tool_runner.ToolInvocationResult.err(f"Unknown tool {name!r}.")
-            artifacts.extend(res.artifacts)
+            logger.info("agent: tool %s -> %s | %s | artifacts=%s",
+                        name, res.status, _short(res.error or res.summary, 160),
+                        [a.get("filename") for a in res.artifacts])
+            trace.append(f"RESULT {name}: status={res.status} | {res.summary or res.error} "
+                         f"| artifacts={[a.get('filename') for a in res.artifacts]}")
+            emit(res.artifacts)   # upload now — survives any later failure/timeout
             if res.work_dir:
                 work_dirs.append(res.work_dir)
             tool_results.append({
@@ -124,18 +174,21 @@ def run_agent(client, question, history, staging, tool_specs, progress, logger) 
             })
         messages.append({"role": "user", "content": tool_results})
 
-    # Hit the iteration cap — one no-tools wrap-up turn so the user still gets a coherent reply.
+    # Hit the iteration cap — one no-tools wrap-up turn for a coherent reply.
     progress("Wrapping up…")
+    logger.info("agent: hit step cap (%d); forcing finalize", MAX_TOOL_ITERATIONS)
+    delivered = " The files I completed are already attached." if artifacts else ""
     try:
         final = client.messages.create(
             model=ACTION_MODEL,
             max_tokens=MAX_TOKENS,
             thinking={"type": "disabled"},
-            system=ACTION_SYSTEM + "\n\nYou have reached the step limit. Summarize what you accomplished and stop calling tools.",
+            system=ACTION_SYSTEM + "\n\nYou have reached the step limit. Briefly summarize what you completed and stop calling tools.",
             messages=messages,
         )
-        text = _text_of(final) or "I ran out of steps before fully finishing, but I've done what I could."
+        text = _text_of(final) or f"I hit my step limit before fully finishing.{delivered}"
     except Exception:
         logger.exception("force-finalize call failed")
-        text = "I ran several steps but hit my limit before finishing. The files I produced are attached."
-    return AgentResult(text=text, artifacts=artifacts, work_dirs=work_dirs)
+        text = f"I hit my step limit before fully finishing.{delivered}"
+    trace.append(f"FINALIZE: {text}")
+    return AgentResult(text=text, artifacts=artifacts, work_dirs=work_dirs, trace=trace)

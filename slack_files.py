@@ -145,11 +145,17 @@ def _artifact_bytes(artifact: dict, staging: Staging, logger) -> bytes | None:
         return None
 
 
-def upload_artifacts(client, channel: str, thread_ts: str, artifacts: list[dict], staging: Staging, logger) -> int:
-    """Upload each produced artifact into the thread via files_upload_v2 (needs
-    files:write). Returns the count uploaded. Per-file failures are logged and skipped."""
+def upload_artifacts(client, channel: str, thread_ts: str, artifacts: list[dict],
+                     staging: Staging, logger, seen: set | None = None) -> int:
+    """Upload each produced artifact into the thread via files_upload_v2 (needs files:write).
+    Returns the count uploaded. Per-file failures are logged and skipped. Pass a shared
+    ``seen`` set to dedupe across incremental + final upload calls (keyed on the artifact's
+    storage ref) so a file is never posted twice."""
     uploaded = 0
     for art in artifacts:
+        ref = art.get("ref")
+        if seen is not None and ref in seen:
+            continue
         data = _artifact_bytes(art, staging, logger)
         if data is None:
             continue
@@ -162,17 +168,65 @@ def upload_artifacts(client, channel: str, thread_ts: str, artifacts: list[dict]
                 title=art.get("title") or art.get("filename") or "result",
             )
             uploaded += 1
+            if seen is not None and ref:
+                seen.add(ref)
+            logger.info("Uploaded artifact %r to thread", art.get("filename"))
         except Exception:
             logger.exception("Failed to upload artifact %r to Slack", art.get("filename"))
     return uploaded
 
 
+def _delete_s3_prefix(bucket: str, prefix: str) -> int:
+    """Delete every object under bucket/prefix. Best-effort; returns count deleted."""
+    import boto3
+
+    s3 = boto3.client("s3")
+    deleted = 0
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix.rstrip("/") + "/"):
+        objs = [{"Key": o["Key"]} for o in page.get("Contents", [])]
+        if not objs:
+            continue
+        s3.delete_objects(Bucket=bucket, Delete={"Objects": objs, "Quiet": True})
+        deleted += len(objs)
+    return deleted
+
+
 def cleanup(stagings: list[Staging], logger) -> None:
-    """Best-effort removal of local temp dirs after a turn. S3 scratch objects are left to
-    a lifecycle rule on the bucket. Never raises."""
+    """Tear down a turn's scratch space. Local: rmtree the temp dir. Lambda: delete every S3
+    object under the run prefix (input + all tool/sandbox outputs) so the bucket doesn't
+    accumulate — the output is already delivered to Slack, so nothing needs to persist.
+    Needs s3:ListBucket + s3:DeleteObject. Never raises."""
     for st in stagings:
-        if st and st.backend == "local" and st.root and os.path.isdir(st.root):
+        if not st:
+            continue
+        if st.backend == "local":
+            if st.root and os.path.isdir(st.root):
+                try:
+                    shutil.rmtree(st.root, ignore_errors=True)
+                except Exception:
+                    logger.exception("Failed to clean staging dir %s", st.root)
+        elif st.backend == "lambda" and st.bucket and st.root:
             try:
-                shutil.rmtree(st.root, ignore_errors=True)
+                n = _delete_s3_prefix(st.bucket, st.root)
+                logger.info("Cleared %d S3 object(s) under s3://%s/%s/", n, st.bucket, st.root)
             except Exception:
-                logger.exception("Failed to clean staging dir %s", st.root)
+                logger.exception("Failed to clear S3 prefix s3://%s/%s/ (a lifecycle rule "
+                                 "is a good backstop)", st.bucket, st.root)
+
+
+def write_trace(staging: Staging, text: str, name: str, logger) -> None:
+    """Optionally persist a run trace for debugging. Writes to s3://bucket/logs/<name> under
+    the lambda backend (a prefix the per-run cleanup does NOT touch). No-op for local (the
+    trace is already on stdout / heroku logs). Gated by the caller (TRACE_TO_S3). Never raises."""
+    if staging.backend != "lambda" or not staging.bucket:
+        return
+    try:
+        import boto3
+        boto3.client("s3").put_object(
+            Bucket=staging.bucket, Key=f"logs/{name}", Body=text.encode("utf-8"),
+            ContentType="text/plain",
+        )
+        logger.info("Wrote run trace to s3://%s/logs/%s", staging.bucket, name)
+    except Exception:
+        logger.exception("Failed to write run trace to S3")

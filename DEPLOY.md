@@ -112,11 +112,19 @@ Create a dedicated least-privilege IAM user (don't reuse your personal keys):
         "arn:aws:lambda:us-east-1:191219945009:function:tm-tool-schedule-extractor",
         "arn:aws:lambda:us-east-1:191219945009:function:tm-sandbox-runcode"
       ] },
-    { "Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject"],
-      "Resource": "arn:aws:s3:::help-bot-code-scratchpad/*" }
+    { "Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+      "Resource": "arn:aws:s3:::help-bot-code-scratchpad/*" },
+    { "Effect": "Allow", "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::help-bot-code-scratchpad" }
   ]
 }
 ```
+
+> The bot deletes each run's scratch objects after replying (output is delivered to Slack,
+> so nothing needs to persist) — hence `s3:DeleteObject` + `s3:ListBucket`. If you used your
+> admin keys for the bot, this is already covered. If you used a scoped `tm-help-bot` user,
+> re-run the `put-user-policy` command with the updated document above. As a backstop, you
+> can also add an S3 lifecycle rule expiring `runs/` after 1 day.
 ```bash
 aws iam create-user --user-name tm-help-bot
 aws iam put-user-policy --user-name tm-help-bot --policy-name invoke-tools \

@@ -120,8 +120,9 @@ class LambdaBackend:
             "backend": "lambda",
         }
         try:
-            import boto3
-            client = boto3.client("lambda")
+            # Wait a bit longer than the function's own timeout so we receive its real
+            # result instead of timing out while it finishes (and writes to S3).
+            client = lambda_client(spec.timeout_seconds + 30)
             resp = client.invoke(
                 FunctionName=fn,
                 InvocationType="RequestResponse",
@@ -177,6 +178,24 @@ def _result_from_local(work_dir, proc, logger) -> ToolInvocationResult:
         error=raw.get("error"),
         work_dir=work_dir,
     )
+
+
+def lambda_client(read_timeout: int):
+    """A boto3 Lambda client tuned for synchronous (RequestResponse) invokes of
+    long-running functions: read_timeout must exceed the function's own timeout, and
+    retries are OFF — botocore's default 60s read_timeout + auto-retries would (a) give up
+    while the function is still running (the result lands in S3 but the bot never sees it)
+    and (b) re-invoke the still-running function, multiplying the wait into minutes."""
+    import boto3
+    from botocore.config import Config
+
+    cfg = Config(
+        connect_timeout=15,
+        read_timeout=read_timeout,
+        retries={"total_max_attempts": 1},
+        tcp_keepalive=True,
+    )
+    return boto3.client("lambda", config=cfg)
 
 
 def get_backend():
