@@ -36,8 +36,10 @@ GPT_CLEANUP = False
 IGNORE_FIRST_COLUMN = True
 # Specific page indices to skip across all PDFs (e.g. cover pages)
 SKIP_PAGES = []
-# Keywords to identify schedules and legends
-SCHED_KEYWORDS = ["drawing title", "legend"]
+# Keywords to identify schedules and legends. Must include "schedule" — a sheet's table is
+# usually labelled "PLANT SCHEDULE" / "IRRIGATION SCHEDULE" etc., so the old "drawing title"
+# value (a title-block field) missed them entirely. Mirrors the proven streamlit_app.py.
+SCHED_KEYWORDS = ["schedule", "legend"]
 # Keywords to identify the header, where the table's columns are defined
 HEAD_KEYWORDS = ["qty", "quantity", "symbol", "key"]
 # Whitespace margin for which to break apart schedules (or consider the "end" of a schedule)
@@ -84,15 +86,17 @@ def extract_pdf_image(page, rect, dpi=300):
     
     return img
 
-# From the given page, find all matches of any of the given keywords; return list of all matches
-def find_in_page_from_list(page, keys):
+# From the given text blocks, find all matches of any of the given keywords; return matches.
+# `blocks` is a list in PyMuPDF get_text("blocks") shape: (x0, y0, x1, y1, text, ...). It can
+# be the page's own text layer OR OCR'd blocks from Textract (see textract_page_blocks).
+def find_in_page_from_list(blocks, keys):
     matches = []
 
-    for match in page.get_text("blocks"):
+    for match in blocks:
         for key in keys:
             if key in match[4].lower():
                 matches.append(match)
-    
+
     return matches
 
 def force_arr_len(arr : list, length : int):
@@ -103,8 +107,9 @@ def force_arr_len(arr : list, length : int):
 def flip_axes(base, flip):
     return base[1], base[0], base[3], base[2] if flip else base[0], base[1], base[2], base[3]
 
-# Get bounding coordinates for all schedules on the page
-def get_sched_rects(scheds, heads, page, flip_axis):
+# Get bounding coordinates for all schedules on the page. `blocks` is the same list passed to
+# find_in_page_from_list (text-layer or OCR), so detection + region-mapping use one source.
+def get_sched_rects(scheds, heads, blocks, flip_axis):
     anchors = []
     # default_heads = ["landscape schedule", "irrigation schedule", "plant schedule", "landscape legend", "irrigation legend", "plant legend"]
 
@@ -146,7 +151,7 @@ def get_sched_rects(scheds, heads, page, flip_axis):
         y_list = []
 
         # Iterate through all text blocks in the page
-        for block in page.get_text("blocks"):
+        for block in blocks:
             if flip_axis:
                 x1, y1, x2, y2 = block[1], block[0], block[3], block[2]
             else:
@@ -158,7 +163,7 @@ def get_sched_rects(scheds, heads, page, flip_axis):
         # Take list of all text blocks within x min/max range and sort by y
         y_list = sorted(y_list, key=lambda x: float(x[1]))
 
-        for block in page.get_text("blocks"):
+        for block in blocks:
             if flip_axis:
                 x1, y1, x2, y2 = block[1], block[0], block[3], block[2]
             else:
@@ -198,6 +203,29 @@ def image_to_bytes(image):
     img_byte_arr = io.BytesIO()
     image.save(img_byte_arr, format='PNG')
     return img_byte_arr.getvalue()
+
+# OCR an entire page with Textract and return its LINE blocks in the SAME shape as
+# page.get_text("blocks") — (x0, y0, x1, y1, text, idx, 0) with coords scaled to PDF points.
+# This is the image-OCR fallback: when a page has no usable text layer (a scanned/flattened
+# sheet with no selectable text), detection can still find schedule/header keywords from the
+# OCR'd text. No tesseract binary required — Textract does the OCR in the cloud.
+def textract_page_blocks(page, dpi=200):
+    pw, ph = page.rect.width, page.rect.height
+    img = extract_pdf_image(page, page.rect, dpi=dpi)
+    response = call_textract(input_document=image_to_bytes(img))
+    blocks = []
+    for idx, b in enumerate(response.get("Blocks", [])):
+        if b.get("BlockType") != "LINE":
+            continue
+        geo = b.get("Geometry", {}).get("BoundingBox", {})
+        x1 = geo.get("Left", 0) * pw
+        y1 = geo.get("Top", 0) * ph
+        x2 = x1 + geo.get("Width", 0) * pw
+        y2 = y1 + geo.get("Height", 0) * ph
+        # Trailing "\n" matches PyMuPDF's block-text convention (downstream splits on it).
+        blocks.append((x1, y1, x2, y2, b.get("Text", "") + "\n", idx, 0))
+    return blocks
+
 
 # Amazon Textract (once we know table coords, we use this to extract table data)
 def extract_table_data(image_bytes):
@@ -351,15 +379,36 @@ def process_pdf(pdf_bytes : bytes, skip_pages : list = None) -> dict:
             if page_num in skip_pages:
                 continue
 
-            scheds = find_in_page_from_list(page, SCHED_KEYWORDS)
-            heads = find_in_page_from_list(page, HEAD_KEYWORDS)
+            # Primary: the PDF's own text layer (fast + exact).
+            blocks = page.get_text("blocks")
+            scheds = find_in_page_from_list(blocks, SCHED_KEYWORDS)
+            heads = find_in_page_from_list(blocks, HEAD_KEYWORDS)
+
+            # Fallback: no schedule found in the text layer (e.g. a scanned/flattened sheet
+            # with no selectable text) — OCR the whole page with Textract and retry detection
+            # on those blocks. extract_table_data already rasterizes each region, so table
+            # extraction works on image-only pages too once we have the coordinates.
+            if len(scheds) == 0 or len(heads) == 0:
+                try:
+                    ocr_blocks = textract_page_blocks(page)
+                except Exception as ocr_err:
+                    if DEBUG:
+                        print(f"  Page {page_num + 1}: OCR fallback failed: {ocr_err}")
+                    ocr_blocks = []
+                if ocr_blocks:
+                    ocr_scheds = find_in_page_from_list(ocr_blocks, SCHED_KEYWORDS)
+                    ocr_heads = find_in_page_from_list(ocr_blocks, HEAD_KEYWORDS)
+                    if len(ocr_scheds) > 0 and len(ocr_heads) > 0:
+                        blocks, scheds, heads = ocr_blocks, ocr_scheds, ocr_heads
+                        if DEBUG:
+                            print(f"  Page {page_num + 1}: detected via image OCR fallback.")
 
             if len(scheds) == 0 or len(heads) == 0:
                 continue
 
             flip_axis = True if abs(scheds[0][0] - scheds[0][2]) < abs(scheds[0][1] - scheds[0][3]) else False
 
-            bboxes = get_sched_rects(scheds, heads if len(heads) > 0 else None, page, flip_axis)
+            bboxes = get_sched_rects(scheds, heads if len(heads) > 0 else None, blocks, flip_axis)
 
             if bboxes is None:
                 raise Exception(f"Schedule found on page {page_num + 1}, but its coordinates could not be accessed.")

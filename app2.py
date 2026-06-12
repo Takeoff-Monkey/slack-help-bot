@@ -429,6 +429,27 @@ def is_allowed(user_id: str | None) -> bool:
 THINKING_PLACEHOLDER = ":hourglass_flowing_sand: _Thinking…_"
 
 
+def recent_thread_files(channel: str, thread_ts: str, logger) -> list[dict]:
+    """Files the user attached earlier in this thread, so an action follow-up that doesn't
+    re-attach ("now highlight 'landscape' in it") can still operate on the original file.
+    Returns the `files` of the most recent NON-bot message that had attachments (newest
+    first), or []. The bot's own uploaded results are skipped so we never feed an output
+    back in as an input."""
+    try:
+        resp = app.client.conversations_replies(channel=channel, ts=thread_ts, limit=100)
+        msgs = resp.get("messages", [])
+    except Exception:
+        logger.exception("Failed to fetch thread history for file carry-over")
+        return []
+    for msg in reversed(msgs):
+        if msg.get("user") == BOT_USER_ID or msg.get("bot_id"):
+            continue
+        files = msg.get("files") or []
+        if files:
+            return files
+    return []
+
+
 def reply_with_thinking_indicator(question, channel, thread_ts, files, history, say, client, logger):
     """Post a 'Thinking…' placeholder, generate the reply, then edit the placeholder to the
     real answer. On the action path it also streams short progress updates ("Running
@@ -462,8 +483,15 @@ def reply_with_thinking_indicator(question, channel, thread_ts, files, history, 
             action = intent == "action"
         except Exception:
             logger.exception("selector intent classification failed; defaulting to Q&A")
+    # On an action turn with no fresh attachment, reuse the file from earlier in the thread
+    # so follow-ups ("now highlight 'landscape' in it") don't make the user re-upload.
+    effective_files = files or []
+    if action and not effective_files:
+        effective_files = recent_thread_files(channel, thread_ts, logger)
+        if effective_files:
+            logger.info("Carrying %d file(s) forward from earlier in this thread", len(effective_files))
     staging = (
-        slack_files.stage_attachments(files or [], SLACK_BOT_TOKEN, TOOL_BACKEND, logger)
+        slack_files.stage_attachments(effective_files, SLACK_BOT_TOKEN, TOOL_BACKEND, logger)
         if action else None
     )
 
