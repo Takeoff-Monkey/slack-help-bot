@@ -38,6 +38,7 @@ import canvas_knowledge
 # code fallback on user-attached files, in addition to answering questions.
 import agent_loop
 import slack_files
+import tasks
 import tool_registry
 
 
@@ -368,7 +369,50 @@ def _looks_like_action(question: str) -> bool:
     return any(name in q or name.replace("-", " ") in q for name in TOOLS)
 
 
-def respond_to_question(question, history, staging, prefetched_skill_ids, progress, on_artifacts, logger) -> "agent_loop.AgentResult":
+_CANCEL_WORDS = ("stop", "cancel", "abort", "nevermind", "never mind", "wrong tool",
+                 "wrong file", "halt", "quit", "don't")
+
+
+def _is_cancel_request(question: str, logger) -> bool:
+    """Decide whether a message sent WHILE a task is running is asking to stop it (e.g. "no
+    that's the wrong tool", "actually I uploaded the wrong file", "stop"). Only called when a
+    task is active, so the extra Haiku call is rare. Falls back to a keyword check on error."""
+    q = (question or "").strip()
+    if not q:
+        return False
+    try:
+        resp = anthropic_client.messages.create(
+            model=SELECTOR_MODEL,
+            max_tokens=10,
+            system=(
+                "A task the assistant started is currently still running for the user. "
+                "Decide if the user's new message is telling the assistant to STOP, cancel, "
+                "abort, or undo that running task (e.g. 'no wrong tool', 'stop', 'actually "
+                "that's the wrong file', 'never mind'). A brand-new unrelated request is NOT "
+                "a cancellation. Answer with the JSON boolean."
+            ),
+            messages=[{"role": "user", "content": q}],
+            output_config={
+                "format": {
+                    "type": "json_schema",
+                    "schema": {
+                        "type": "object",
+                        "properties": {"cancel": {"type": "boolean"}},
+                        "required": ["cancel"],
+                        "additionalProperties": False,
+                    },
+                }
+            },
+        )
+        text = next(b.text for b in resp.content if b.type == "text")
+        return bool(json.loads(text).get("cancel"))
+    except Exception:
+        logger.exception("cancel-intent check failed; falling back to keywords")
+        ql = q.lower()
+        return any(w in ql for w in _CANCEL_WORDS)
+
+
+def respond_to_question(question, history, staging, prefetched_skill_ids, progress, on_artifacts, cancel_event, logger) -> "agent_loop.AgentResult":
     """Route a turn. When `staging` is not None we're on the *action* path (a file was
     attached, a tool was named, or the selector classified intent as "action") → run the
     tool-use loop. Otherwise it's the unchanged retrieval Q&A path, reusing the skills the
@@ -384,7 +428,7 @@ def respond_to_question(question, history, staging, prefetched_skill_ids, progre
     try:
         if staging is not None:
             return agent_loop.run_agent(
-                anthropic_client, question, history, staging, TOOLS, progress, on_artifacts, logger
+                anthropic_client, question, history, staging, TOOLS, progress, on_artifacts, cancel_event, logger
             )
 
         skill_ids = prefetched_skill_ids if prefetched_skill_ids is not None else select_skills(question, history)
@@ -458,7 +502,12 @@ def reply_with_thinking_indicator(question, channel, thread_ts, files, history, 
     placeholder = say(text=THINKING_PLACEHOLDER, thread_ts=thread_ts)
     placeholder_ts = placeholder.get("ts") if placeholder else None
 
-    # Throttled progress: only edits the placeholder when the message actually changes.
+    # Register this run so a follow-up message on another thread can cancel it mid-task.
+    task_key = tasks.key(channel, thread_ts)
+    cancel_event = tasks.register(task_key)
+
+    # Throttled progress: only edits the placeholder when the message actually changes. The
+    # message is shown as-is (the model writes a friendly sentence), prefixed with an hourglass.
     last_progress = {"text": None}
 
     def progress(msg):
@@ -467,7 +516,7 @@ def reply_with_thinking_indicator(question, channel, thread_ts, files, history, 
         last_progress["text"] = msg
         try:
             client.chat_update(
-                channel=channel, ts=placeholder_ts, text=f":hourglass_flowing_sand: _{msg}_"
+                channel=channel, ts=placeholder_ts, text=f":hourglass_flowing_sand: {msg}"
             )
         except Exception:
             logger.exception("progress chat_update failed (continuing)")
@@ -506,7 +555,7 @@ def reply_with_thinking_indicator(question, channel, thread_ts, files, history, 
 
     try:
         result = respond_to_question(
-            question, history, staging, prefetched_skills, progress, emit_artifacts, logger
+            question, history, staging, prefetched_skills, progress, emit_artifacts, cancel_event, logger
         )
         text = result.text or "Done."
         if placeholder_ts:
@@ -518,8 +567,9 @@ def reply_with_thinking_indicator(question, channel, thread_ts, files, history, 
         else:
             say(text=text, thread_ts=thread_ts)
 
-        # Final sweep — uploads anything not already delivered incrementally (no-op if all were).
-        if staging is not None and result.artifacts:
+        # Final sweep — uploads anything not already delivered incrementally (no-op if all
+        # were). Skipped when cancelled so we don't push out the very output the user rejected.
+        if staging is not None and result.artifacts and not result.cancelled:
             slack_files.upload_artifacts(
                 client, channel, thread_ts, result.artifacts, staging, logger, seen=uploaded_refs
             )
@@ -530,8 +580,25 @@ def reply_with_thinking_indicator(question, channel, thread_ts, files, history, 
                 staging, "\n".join(result.trace), f"{thread_ts}.txt", logger
             )
     finally:
+        tasks.deregister(task_key, cancel_event)
         if staging is not None:
             slack_files.cleanup([staging], logger)
+
+
+def _maybe_cancel(question, channel, thread_ts, say, logger) -> bool:
+    """If a task is running on this thread and this message asks to stop it, cancel it and
+    return True (the caller should stop processing). Cheap: the cancel-intent model call only
+    runs when something is actually in flight on this thread."""
+    key = tasks.key(channel, thread_ts)
+    if not tasks.has_active(key) or not _is_cancel_request(question, logger):
+        return False
+    n = tasks.cancel(key)
+    logger.info("Cancel requested — tripped %d running task(s) on %s", n, key)
+    say(
+        text=":octagonal_sign: Okay, I've stopped that — let me know what you'd like instead.",
+        thread_ts=thread_ts,
+    )
+    return True
 
 
 @app.event("app_mention")
@@ -548,6 +615,8 @@ def handle_app_mention(event, say, client, logger):
     thread_ts = event.get("thread_ts") or current_ts
     files = event.get("files") or []
     logger.info(f"app_mention question: {question!r} (files: {len(files)})")
+    if _maybe_cancel(question, channel, thread_ts, say, logger):
+        return
     history = get_conversation_history(channel, thread_ts, current_ts, logger)
     reply_with_thinking_indicator(
         question, channel, thread_ts, files, history, say, client, logger
@@ -575,6 +644,8 @@ def handle_message(event, say, client, logger):
     thread_ts = event.get("thread_ts") or current_ts
     files = event.get("files") or []
     logger.info(f"DM question: {question!r} (files: {len(files)})")
+    if _maybe_cancel(question, channel, thread_ts, say, logger):
+        return
     history = get_conversation_history(channel, thread_ts, current_ts, logger)
     reply_with_thinking_indicator(
         question, channel, thread_ts, files, history, say, client, logger

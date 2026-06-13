@@ -14,6 +14,7 @@ blocks from text — the #1 cause of malformed-history 400s.
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import os
 from dataclasses import dataclass, field
@@ -27,9 +28,24 @@ ACTION_MODEL = os.environ.get("ACTION_MODEL", "claude-sonnet-4-6")
 MAX_TOOL_ITERATIONS = int(os.environ.get("MAX_TOOL_ITERATIONS", "6"))
 MAX_TOKENS = 2048
 
+# Tools run in a worker thread so the loop can keep polling the cancel signal and abandon a
+# long-running tool the moment the user says "stop" (the Lambda finishes in the background;
+# we just stop waiting on it and discard its result).
+_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=8, thread_name_prefix="tool")
+
+
+class _NeverCancel:
+    """Default no-op cancel signal for callers that don't pass one."""
+    @staticmethod
+    def is_set() -> bool:
+        return False
+
 # The Slack-mrkdwn rules are copied from app2.ANSWER_SYSTEM so action replies render the
 # same way as Q&A replies.
 ACTION_SYSTEM = """You are an AI assistant for Takeoff Monkey that can *perform operations* for teammates, not just answer questions. You have specialized tools plus a `run_code` sandbox.
+
+Tell the user what you're doing:
+- Before you call ANY tool, first write ONE short, friendly sentence saying what you're about to do and on which file — e.g. "On it — running the Schedule Extractor on that PDF now." Then make the tool call in the SAME turn. This lets the user see what's happening and stop you if it's not what they wanted.
 
 Core rule — do exactly what was asked, then stop:
 - Most requests are satisfied by ONE tool call. Pick the single registered tool that matches the request, call it once, and when it returns status "ok" you are DONE.
@@ -60,6 +76,20 @@ class AgentResult:
     artifacts: list = field(default_factory=list)
     work_dirs: list = field(default_factory=list)  # for cleanup (paths/prefixes), never shown
     trace: list = field(default_factory=list)       # human-readable step-by-step log
+    cancelled: bool = False                          # user stopped it mid-task
+
+
+def _run_interruptible(fn, cancel_event):
+    """Run fn() in a worker thread while polling cancel_event. Returns (result, cancelled).
+    On cancel the worker is abandoned (it finishes in the background; we ignore its result)."""
+    future = _EXECUTOR.submit(fn)
+    while True:
+        if cancel_event.is_set():
+            return None, True
+        try:
+            return future.result(timeout=0.4), False
+        except concurrent.futures.TimeoutError:
+            continue
 
 
 def _normalize(messages: list[dict]) -> list[dict]:
@@ -85,17 +115,19 @@ def _short(s, n: int = 300) -> str:
     return s if len(s) <= n else s[:n] + "…"
 
 
-def run_agent(client, question, history, staging, tool_specs, progress, on_artifacts, logger) -> AgentResult:
+def run_agent(client, question, history, staging, tool_specs, progress, on_artifacts, cancel_event, logger) -> AgentResult:
     """Drive the tool-use loop.
 
     - progress(msg): updates the Slack 'Thinking…' placeholder with a status line.
-    - on_artifacts(list): called the MOMENT a tool produces files, so they're uploaded to the
-      thread immediately. This guarantees the user gets output even if a later step errors or
-      the loop hits its cap — the file is already delivered.
+    - on_artifacts(list): uploads files the moment a tool produces them (output survives a
+      later failure or the step cap).
+    - cancel_event: a threading.Event-like; if it trips, the loop stops ASAP — including
+      abandoning a tool mid-run — and returns a cancelled AgentResult.
 
     Every step is logged at INFO and appended to a human-readable `trace` (returned on the
     AgentResult) so the run isn't a black box.
     """
+    cancel_event = cancel_event or _NeverCancel()
     tool_defs = tool_registry.anthropic_tool_defs(tool_specs) + [sandbox.run_code_tool_def()]
 
     attach_note = slack_files.attachments_for_prompt(staging)
@@ -117,10 +149,21 @@ def run_agent(client, question, history, staging, tool_specs, progress, on_artif
             except Exception:
                 logger.exception("on_artifacts callback failed (continuing)")
 
+    def cancelled_result():
+        logger.info("agent: cancelled by user")
+        trace.append("CANCELLED by user")
+        return AgentResult(
+            text=":octagonal_sign: _Cancelled._",
+            artifacts=artifacts, work_dirs=work_dirs, trace=trace, cancelled=True,
+        )
+
     logger.info("agent: start | %d tool(s) | %d file(s) | q=%r",
                 len(tool_defs), len(staging.files), _short(question, 120))
 
     for step in range(MAX_TOOL_ITERATIONS):
+        if cancel_event.is_set():
+            return cancelled_result()
+
         msg = client.messages.create(
             model=ACTION_MODEL,
             max_tokens=MAX_TOKENS,
@@ -129,6 +172,9 @@ def run_agent(client, question, history, staging, tool_specs, progress, on_artif
             tools=tool_defs,
             messages=messages,
         )
+        if cancel_event.is_set():
+            return cancelled_result()
+
         # The assistant turn (text + tool_use blocks) must be appended verbatim before the
         # matching tool_result turn.
         messages.append({"role": "assistant", "content": msg.content})
@@ -146,18 +192,32 @@ def run_agent(client, question, history, staging, tool_specs, progress, on_artif
             logger.info("agent: done after %d step(s)", step + 1)
             return AgentResult(text=say or "Done.", artifacts=artifacts, work_dirs=work_dirs, trace=trace)
 
+        # Surface the model's friendly preamble ("running the Schedule Extractor now…") so the
+        # user can see what's happening and stop it if it's wrong.
+        if say:
+            progress(say)
+
         tool_results = []
         for block in tool_calls:
+            if cancel_event.is_set():
+                return cancelled_result()
             name = block.name
-            trace.append(f"CALL[{step + 1}] {name}({_short(json.dumps(block.input), 300)})")
-            if name == "run_code":
-                progress("Running a custom step…")
-                res = sandbox.run_code(block.input, staging, logger)
-            elif name in tool_specs:
+            if not say:
                 progress(f"Running {name}…")
-                res = tool_runner.run_tool(tool_specs[name], block.input, staging, logger)
-            else:
-                res = tool_runner.ToolInvocationResult.err(f"Unknown tool {name!r}.")
+            trace.append(f"CALL[{step + 1}] {name}({_short(json.dumps(block.input), 300)})")
+
+            def _do(block=block, name=name):
+                if name == "run_code":
+                    return sandbox.run_code(block.input, staging, logger)
+                if name in tool_specs:
+                    return tool_runner.run_tool(tool_specs[name], block.input, staging, logger)
+                return tool_runner.ToolInvocationResult.err(f"Unknown tool {name!r}.")
+
+            # Run in a worker thread so a cancel mid-tool abandons it instead of blocking.
+            res, was_cancelled = _run_interruptible(_do, cancel_event)
+            if was_cancelled:
+                return cancelled_result()
+
             logger.info("agent: tool %s -> %s | %s | artifacts=%s",
                         name, res.status, _short(res.error or res.summary, 160),
                         [a.get("filename") for a in res.artifacts])
@@ -175,6 +235,8 @@ def run_agent(client, question, history, staging, tool_specs, progress, on_artif
         messages.append({"role": "user", "content": tool_results})
 
     # Hit the iteration cap — one no-tools wrap-up turn for a coherent reply.
+    if cancel_event.is_set():
+        return cancelled_result()
     progress("Wrapping up…")
     logger.info("agent: hit step cap (%d); forcing finalize", MAX_TOOL_ITERATIONS)
     delivered = " The files I completed are already attached." if artifacts else ""
