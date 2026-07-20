@@ -1,0 +1,36 @@
+{
+  "name": "wall-height-calculator",
+  "version": "1",
+  "description": "Calculate retaining-wall heights and areas from the TW/BW (top-of-wall / bottom-of-wall) elevation markup annotations on a plan/site PDF, producing an Excel workbook of per-wall calculated height, rounded height, length, and area.",
+  "when_to_use": "Use when the user attaches a marked-up plan/site PDF whose annotations carry wall IDs with TW/BW elevation callouts and asks to calculate wall heights, wall areas, or build a wall takeoff/schedule from those markups. Set project_type to control height rounding: \"Single-Family\" rounds up to the nearest 0.1 ft, \"Multi-Family/Commercial\" rounds up to the nearest 0.5 ft; if the user doesn't say, omit it and the tool defaults to Single-Family. Do NOT use for PDFs without wall elevation markups, for extracting schedule/legend tables (that's schedule-extractor), or for keyword highlighting (that's bid-scanner).",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "input_file": {
+        "type": "string",
+        "description": "Handle of the attached PDF to process, e.g. \"file_1\". Must be one of the file handles listed in the conversation."
+      },
+      "project_type": {
+        "type": "string",
+        "enum": ["Single-Family", "Multi-Family/Commercial"],
+        "default": "Single-Family",
+        "description": "Controls wall-height rounding. \"Single-Family\" rounds up to the nearest 0.1 ft; \"Multi-Family/Commercial\" rounds up to the nearest 0.5 ft. Provide ONLY if the user specified the project type; otherwise omit and the tool defaults to Single-Family."
+      },
+      "skip_pages": {
+        "type": "array",
+        "items": { "type": "integer" },
+        "default": [],
+        "description": "Zero-based page indices to skip (e.g. a cover sheet). Empty means scan every page."
+      }
+    },
+    "required": ["input_file"],
+    "additionalProperties": false
+  },
+  "accepts": { "file_types": ["pdf"], "max_files": 1 },
+  "output": "An .xlsx workbook (sheet 'Wall Data') with one row per detected wall: Wall Type, First Input Top, First Input Bottom, Wall Height in Feet (Calculated), Wall Height (Roundup), Wall Length in Feet, and Wall Area (SF). If no wall elevation markups are found, no file is produced and a short note is returned instead.",
+  "entrypoint": {
+    "local": { "type": "subprocess", "cmd": ["run.py"], "cwd": "tools/wall-height-calculator" },
+    "lambda": { "type": "lambda", "function_name": "tm-tool-wall-height-calculator" }
+  },
+  "timeout_seconds": 300
+}

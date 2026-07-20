@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
-# Deploy the schedule-extractor Lambda (container image) with AWS SAM.
+# Deploy the wall-height-calculator Lambda (container image) with AWS SAM.
 # Prereqs: awscli configured, docker running, sam CLI installed.
 #
 # Usage:
 #   SCRATCH_BUCKET=prod-s3-tm-bot-scratch-YYYY-MM-DD ./deploy.sh
-#   (optional) ANTHROPIC_API_KEY=sk-ant-... if you enable AI_CLEANUP in main2.py
-#   (optional) CLEANUP_MODEL=claude-sonnet-5  to override the Claude cleanup model
 #
 # First run uses --guided to create the stack config; later runs reuse it.
 set -euo pipefail
@@ -13,19 +11,11 @@ cd "$(dirname "$0")"
 
 : "${SCRATCH_BUCKET:?Set SCRATCH_BUCKET to the scratch S3 bucket name}"
 REGION="${AWS_DEFAULT_REGION:-us-east-1}"
-STACK="${STACK:-tm-tool-schedule-extractor}"
-ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
-CLEANUP_MODEL="${CLEANUP_MODEL:-}"
+STACK="${STACK:-tm-tool-wall-height-calculator}"
 
 sam build
 
 PARAMS="ScratchBucket=${SCRATCH_BUCKET}"
-if [ -n "${ANTHROPIC_API_KEY}" ]; then
-  PARAMS="${PARAMS} AnthropicApiKey=${ANTHROPIC_API_KEY}"
-fi
-if [ -n "${CLEANUP_MODEL}" ]; then
-  PARAMS="${PARAMS} CleanupModel=${CLEANUP_MODEL}"
-fi
 
 if [ -f samconfig.toml ]; then
   sam deploy --region "${REGION}" --parameter-overrides ${PARAMS}

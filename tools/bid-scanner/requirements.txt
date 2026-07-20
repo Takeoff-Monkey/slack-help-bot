@@ -1,0 +1,4 @@
+PyMuPDF
+pandas
+xlsxwriter
+boto3

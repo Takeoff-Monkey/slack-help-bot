@@ -1,10 +1,13 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: >
-  run_code sandbox Lambda for the Takeoff Monkey Slack bot. Executes model-written Python in
-  an isolated, least-privilege function (scratch bucket only; no Textract or other AWS).
-  Model code runs as a scrubbed subprocess so it can't even see the role credentials.
-  Deploy with no network egress for full isolation (see the commented VpcConfig below).
+  run_code sandbox Lambdas for the Takeoff Monkey Slack bot. Executes model-written Python in
+  isolated, least-privilege functions (scratch bucket only; no Textract or other AWS). Model
+  code runs as a scrubbed subprocess so it can't even see the role credentials. Two functions
+  are defined: tm-sandbox-runcode (default extended toolkit — Tesseract OCR + imaging + doc
+  libs) and tm-sandbox-runcode-ocr (adds the heavier RapidOCR neural engine, escalated to when
+  Tesseract output is poor). Deploy with no network egress for full isolation (see the commented
+  VpcConfig below).
 
 Parameters:
   ScratchBucket:
@@ -21,6 +24,7 @@ Globals:
     MemorySize: 2048
 
 Resources:
+  # Default sandbox — extended toolkit (Tesseract OCR + opencv + PDF/data/doc libs).
   SandboxFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -49,7 +53,38 @@ Resources:
       DockerContext: ..          # the sandbox dir (so requirements.txt is in scope)
       DockerTag: latest
 
+  # Neural-OCR sandbox — everything above PLUS RapidOCR (onnxruntime). Same least-privilege role.
+  # More memory: neural inference peaks ~1GB on large pages, and on Lambda more memory = more vCPU
+  # (faster OCR). The bot invokes this only when it escalates from the default environment.
+  SandboxOcrFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: tm-sandbox-runcode-ocr
+      PackageType: Image
+      Architectures: [x86_64]
+      MemorySize: 3008
+      Environment:
+        Variables:
+          SCRATCH_S3_BUCKET: !Ref ScratchBucket
+          SANDBOX_TIMEOUT_SECONDS: !Ref SandboxTimeoutSeconds
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+              Resource: !Sub "arn:aws:s3:::${ScratchBucket}/*"
+      # Same no-egress guidance as SandboxFunction — RapidOCR's models are bundled in the image,
+      # so it needs no network at all.
+    Metadata:
+      Dockerfile: lambda/Dockerfile.ocr
+      DockerContext: ..
+      DockerTag: latest
+
 Outputs:
   FunctionName:
     Value: !Ref SandboxFunction
     Description: Set as the bot's SANDBOX_LAMBDA_NAME (default tm-sandbox-runcode already matches).
+  OcrFunctionName:
+    Value: !Ref SandboxOcrFunction
+    Description: Set as the bot's SANDBOX_LAMBDA_NAME_OCR (default tm-sandbox-runcode-ocr already matches).

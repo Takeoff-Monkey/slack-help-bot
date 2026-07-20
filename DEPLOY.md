@@ -1,12 +1,16 @@
 # Deploying the bot's tools (install + push)
 
-There are **three Python environments** and they never mix:
+There are **four Python environments** and they never mix:
 
 | Environment | Where | Built by | Holds |
 |---|---|---|---|
 | **Bot** | repo root (`./.venv` locally, the Heroku dyno in prod) | `requirements.txt` | anthropic, slack-bolt, **boto3** — light |
 | **Tool** | `tools/schedule-extractor/.venv` | `tools/schedule-extractor/setup.sh` | PyMuPDF, pandas, textract — heavy |
-| **Sandbox** | `sandbox/.venv` | `sandbox/setup.sh` | PyMuPDF, pandas, Pillow |
+| **Sandbox (default)** | `sandbox/.venv` | `sandbox/setup.sh` | Tesseract OCR + opencv + PDF/data/doc libs (extended toolkit) |
+| **Sandbox (neural OCR)** | `sandbox/.venv-ocr` | `sandbox/setup.sh` | above **+** RapidOCR (`rapidocr-onnxruntime` + onnxruntime, offline models) |
+
+> `sandbox/setup.sh` builds **both** sandbox venvs and warns if the `tesseract`/`pdftoppm` system
+> binaries are missing (OCR needs them — `sudo apt-get install -y tesseract-ocr poppler-utils`).
 
 > **Key fact:** the tool/sandbox `.venv`s are gitignored, so they do **not** exist on Heroku.
 > That's why **Heroku must run `TOOL_BACKEND=lambda`** (the tools live in AWS Lambda there).
@@ -86,14 +90,16 @@ SCRATCH_BUCKET=help-bot-code-scratchpad ./deploy.sh
 #   "allow SAM to create IAM roles" = Y, ScratchBucket = help-bot-code-scratchpad,
 #   OpenAIApiKey = (leave blank unless you turn GPT_CLEANUP on), save args = Y.
 
-# Sandbox Lambda → creates function: tm-sandbox-runcode
+# Sandbox Lambdas → creates BOTH functions: tm-sandbox-runcode + tm-sandbox-runcode-ocr
 cd ../../../sandbox/lambda
 SCRATCH_BUCKET=help-bot-code-scratchpad ./deploy.sh
 ```
 SAM builds the Docker images, pushes them to an auto-created ECR repo, and creates each
 function **with its own least-privilege execution role** (Textract + scratch-bucket for the
-tool; scratch-bucket only for the sandbox). Your `KonurPapa` user needs rights to create
-CloudFormation/ECR/Lambda/IAM (account owner is fine).
+tool; scratch-bucket only for the sandboxes). The sandbox stack now builds **two** images —
+the default extended toolkit and the heavier neural-OCR image (`Dockerfile.ocr`, ~300MB larger,
+so a slower first build). Your `KonurPapa` user needs rights to create CloudFormation/ECR/Lambda/IAM
+(account owner is fine).
 
 ---
 
@@ -110,7 +116,8 @@ Create a dedicated least-privilege IAM user (don't reuse your personal keys):
     { "Effect": "Allow", "Action": "lambda:InvokeFunction",
       "Resource": [
         "arn:aws:lambda:us-east-1:191219945009:function:tm-tool-schedule-extractor",
-        "arn:aws:lambda:us-east-1:191219945009:function:tm-sandbox-runcode"
+        "arn:aws:lambda:us-east-1:191219945009:function:tm-sandbox-runcode",
+        "arn:aws:lambda:us-east-1:191219945009:function:tm-sandbox-runcode-ocr"
       ] },
     { "Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
       "Resource": "arn:aws:s3:::help-bot-code-scratchpad/*" },
@@ -169,7 +176,7 @@ heroku logs --tail -a slack-help-bot     # look for: Discovered tool 'schedule-e
 |---|---|
 | Scratch bucket | `help-bot-code-scratchpad` (us-east-1) |
 | Tool Lambda | `tm-tool-schedule-extractor` |
-| Sandbox Lambda | `tm-sandbox-runcode` |
+| Sandbox Lambdas | `tm-sandbox-runcode` (default), `tm-sandbox-runcode-ocr` (neural OCR) |
 | Heroku app | `slack-help-bot` |
 | New Slack scope | `files:write` (reinstall) |
 | Prod env vars | `TOOL_BACKEND=lambda`, `SCRATCH_S3_BUCKET`, `AWS_*` |

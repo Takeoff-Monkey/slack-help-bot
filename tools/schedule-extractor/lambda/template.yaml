@@ -9,11 +9,15 @@ Parameters:
   ScratchBucket:
     Type: String
     Description: S3 bucket the bot stages inputs to and reads outputs from.
-  OpenAIApiKey:
+  AnthropicApiKey:
     Type: String
     Default: ""
     NoEcho: true
-    Description: Only needed if GPT_CLEANUP is enabled in main2.py. Leave blank otherwise.
+    Description: Only needed if AI_CLEANUP is enabled in main2.py. Leave blank otherwise.
+  CleanupModel:
+    Type: String
+    Default: "claude-sonnet-5"
+    Description: Claude model for the AI cleanup pass (main2.py CLEANUP_MODEL). Bump to a newer model here without a code change.
 
 Globals:
   Function:
@@ -30,7 +34,8 @@ Resources:
       Environment:
         Variables:
           SCRATCH_S3_BUCKET: !Ref ScratchBucket
-          OPENAI_API_KEY: !Ref OpenAIApiKey
+          ANTHROPIC_API_KEY: !Ref AnthropicApiKey
+          CLEANUP_MODEL: !Ref CleanupModel
           # NOTE: do NOT set AWS_DEFAULT_REGION here — it's a reserved Lambda runtime var
           # (the runtime already provides AWS_REGION / AWS_DEFAULT_REGION = the function's
           # region), and Lambda rejects any attempt to define it.

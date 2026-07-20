@@ -1,5 +1,5 @@
 # Container image for the schedule-extractor Lambda.
-# Image (not zip) because the deps (PyMuPDF, pandas, Pillow, openai, textract) exceed the
+# Image (not zip) because the deps (PyMuPDF, pandas, Pillow, anthropic, textract) exceed the
 # 250 MB zip limit. Build context is the tool dir (see template.yaml DockerContext: ..),
 # so main2.py and requirements.txt are at the context root and handler.py under lambda/.
 FROM public.ecr.aws/lambda/python:3.12

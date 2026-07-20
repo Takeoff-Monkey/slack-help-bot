@@ -1,0 +1,45 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  wall-height-calculator tool as a synchronous (request/response) Lambda for the Takeoff
+  Monkey Slack bot. Reads a marked-up PDF from the scratch S3 bucket, computes retaining-wall
+  heights + areas from its TW/BW elevation annotations with PyMuPDF, writes an .xlsx back to
+  S3, returns a JSON result. No other AWS services are used.
+
+Parameters:
+  ScratchBucket:
+    Type: String
+    Description: S3 bucket the bot stages inputs to and reads outputs from.
+
+Globals:
+  Function:
+    Timeout: 300
+    MemorySize: 2048
+
+Resources:
+  WallHeightCalculatorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: tm-tool-wall-height-calculator
+      PackageType: Image
+      Architectures: [x86_64]
+      Environment:
+        Variables:
+          SCRATCH_S3_BUCKET: !Ref ScratchBucket
+      Policies:
+        # Scratch bucket only (least privilege) — read inputs, write outputs.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+              Resource: !Sub "arn:aws:s3:::${ScratchBucket}/*"
+    Metadata:
+      Dockerfile: lambda/Dockerfile
+      DockerContext: ..          # the tool dir (so wall_heights.py + requirements.txt are in scope)
+      DockerTag: latest
+
+Outputs:
+  FunctionName:
+    Value: !Ref WallHeightCalculatorFunction
+    Description: Set this as the bot's tool.json entrypoint.lambda.function_name (already tm-tool-wall-height-calculator).

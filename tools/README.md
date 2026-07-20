@@ -5,6 +5,20 @@ When a teammate attaches a file and asks for something, the bot reaches for the 
 specialized tool first; anything no tool covers, it attempts itself with the sandboxed
 `run_code` fallback. See the design notes below before adding a tool.
 
+### The `run_code` sandbox environments
+The `run_code` fallback ([../sandbox.py](../sandbox.py), deps in [../sandbox/](../sandbox/)) runs
+model-written Python in one of two environments, chosen by the model via the tool's `environment`
+field:
+- **`default`** (extended toolkit) — Tesseract OCR (`pytesseract` + the `tesseract` binary),
+  `cv2` (opencv-headless, image preprocessing), `fitz` (PyMuPDF), `pdfplumber`, `pdf2image`,
+  `pandas`/`numpy`, `PIL`, `openpyxl`/`xlsxwriter`, `python-docx`, `python-pptx`, `reportlab`,
+  `tabulate`. Fast; the model uses it first. Needs the `tesseract` and poppler `pdftoppm` system
+  binaries (already present locally; installed via SPAL in the Lambda image).
+- **`neural_ocr`** — everything in `default` PLUS RapidOCR (`rapidocr_onnxruntime`), a neural OCR
+  engine with **bundled, offline** ONNX models that is far more accurate on messy/rotated/scanned
+  images. Heavier + slower cold start, so the bot escalates to it only when `default` Tesseract
+  output looks poor. Local = `sandbox/.venv-ocr`; Lambda = `tm-sandbox-runcode-ocr`.
+
 ## Anatomy of a tool
 
 ```
@@ -47,9 +61,9 @@ artifact back into the Slack thread.
 Selected by `TOOL_BACKEND`:
 - **`local`** (default) — the bot runs `run.py` as a subprocess in the tool's `.venv`. Proves
   the whole flow with no cloud. Run `tools/<name>/setup.sh` and `sandbox/setup.sh` once.
-- **`lambda`** — the bot invokes each tool's AWS Lambda (`tm-tool-<name>`) and the sandbox
-  Lambda (`tm-sandbox-runcode`); files round-trip through `SCRATCH_S3_BUCKET`. Nothing else
-  in the bot changes when you flip the switch.
+- **`lambda`** — the bot invokes each tool's AWS Lambda (`tm-tool-<name>`) and the two sandbox
+  Lambdas (`tm-sandbox-runcode`, `tm-sandbox-runcode-ocr`); files round-trip through
+  `SCRATCH_S3_BUCKET`. Nothing else in the bot changes when you flip the switch.
 
 ### Bot environment variables
 | var | default | purpose |
@@ -57,10 +71,12 @@ Selected by `TOOL_BACKEND`:
 | `TOOL_BACKEND` | `local` | `local` or `lambda` |
 | `SCRATCH_S3_BUCKET` | — | scratch bucket for staging files (lambda only) |
 | `MAX_FILE_BYTES` | `26214400` | per-attachment download cap (25 MB) |
-| `ACTION_MODEL` | `claude-sonnet-4-6` | model that drives the tool-use loop |
+| `ACTION_MODEL` | `claude-sonnet-5` | model that drives the tool-use loop |
 | `MAX_TOOL_ITERATIONS` | `6` | tool-use loop cap |
 | `SANDBOX_TIMEOUT_SECONDS` | `120` | hard cap on a single `run_code` run |
-| `SANDBOX_LAMBDA_NAME` | `tm-sandbox-runcode` | sandbox Lambda name (lambda only) |
+| `SANDBOX_LAMBDA_NAME` | `tm-sandbox-runcode` | default sandbox Lambda name (lambda only) |
+| `SANDBOX_LAMBDA_NAME_OCR` | `tm-sandbox-runcode-ocr` | neural-OCR sandbox Lambda name (lambda only) |
+| `SANDBOX_OMP_NUM_THREADS` | `4` | thread cap for OCR/onnxruntime in `run_code` |
 
 ### New Slack scope
 Uploading result files needs **`files:write`** (in addition to the existing `files:read`).
@@ -75,11 +91,14 @@ Add it in the Slack app's *OAuth & Permissions* and **reinstall the app**.
 ## Deploying the Lambdas (when you're ready to flip to `lambda`)
 1. Create a scratch S3 bucket (suggest a lifecycle rule to expire `runs/` after a day).
 2. `cd tools/schedule-extractor/lambda && SCRATCH_BUCKET=<bucket> ./deploy.sh`
-3. `cd sandbox/lambda && SCRATCH_BUCKET=<bucket> ./deploy.sh`
-4. Set the bot's config: `TOOL_BACKEND=lambda`, `SCRATCH_S3_BUCKET=<bucket>`, and AWS creds.
+3. `cd tools/bid-scanner/lambda && SCRATCH_BUCKET=<bucket> ./deploy.sh`
+4. `cd tools/wall-height-calculator/lambda && SCRATCH_BUCKET=<bucket> ./deploy.sh`
+5. `cd sandbox/lambda && SCRATCH_BUCKET=<bucket> ./deploy.sh` (builds BOTH sandbox images:
+   `tm-sandbox-runcode` and `tm-sandbox-runcode-ocr`)
+6. Set the bot's config: `TOOL_BACKEND=lambda`, `SCRATCH_S3_BUCKET=<bucket>`, and AWS creds.
 
 ### Bot IAM policy (Heroku access keys)
-The bot only needs to invoke the two functions and read/write the scratch bucket:
+The bot only needs to invoke the five functions and read/write the scratch bucket:
 ```json
 {
   "Version": "2012-10-17",
@@ -88,7 +107,10 @@ The bot only needs to invoke the two functions and read/write the scratch bucket
       "Action": "lambda:InvokeFunction",
       "Resource": [
         "arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:tm-tool-schedule-extractor",
-        "arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:tm-sandbox-runcode"
+        "arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:tm-tool-bid-scanner",
+        "arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:tm-tool-wall-height-calculator",
+        "arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:tm-sandbox-runcode",
+        "arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:tm-sandbox-runcode-ocr"
       ] },
     { "Effect": "Allow",
       "Action": ["s3:GetObject", "s3:PutObject"],
@@ -96,7 +118,8 @@ The bot only needs to invoke the two functions and read/write the scratch bucket
   ]
 }
 ```
-The Lambdas use their **own** execution roles (Textract + scratch bucket for the tool;
-scratch bucket only for the sandbox) — no static keys inside them.
+The Lambdas use their **own** execution roles (schedule-extractor: Textract + scratch
+bucket; bid-scanner, wall-height-calculator, and both sandbox functions: scratch bucket only)
+— no static keys inside them.
 
 > Region convention: `us-east-1`. Owner: Konur Papageorgiou; general escalation: Tommy Lather.

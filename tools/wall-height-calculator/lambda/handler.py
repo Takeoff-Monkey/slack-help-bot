@@ -1,20 +1,20 @@
-"""AWS Lambda handler for the schedule-extractor tool.
+"""AWS Lambda handler for the wall-height-calculator tool.
 
 Same JSON contract as run.py, but files move through S3 instead of the local disk (sync
-Lambda payloads are capped at 6 MB, so the bot always passes the PDF by S3 key). Extraction
-logic is the shared core in main2.py — unchanged.
+Lambda payloads are capped at 6 MB, so the bot always passes the PDF by S3 key). The
+detection + output logic is the shared core in wall_heights.py — unchanged.
 
 Event (from the bot's tool_runner LambdaBackend):
-  { "input": {"ignore_first_column": true, "skip_pages": []},
+  { "input": {"project_type": "Single-Family", "skip_pages": []},
     "input_path": "runs/<id>/input/file_1-site.pdf",   # S3 key of the staged PDF
     "work_dir":   "runs/<id>/work-XXXX/output",         # S3 prefix for outputs
     "bucket":     "<scratch bucket>",
     "backend":    "lambda" }
 
-Returns the same result dict run.py writes, with artifact refs as S3 keys.
+Returns the same result dict run.py writes, with the artifact ref as an S3 key.
 
-Credentials: Textract + S3 come from the Lambda execution role (no static keys). Only
-ANTHROPIC_API_KEY is needed as an env var, and only if AI_CLEANUP is enabled.
+Credentials: only the scratch S3 bucket is touched, via the Lambda execution role — no
+static keys, no other AWS services.
 """
 
 import os
@@ -22,7 +22,7 @@ import traceback
 
 import boto3
 
-import main2
+import wall_heights
 
 s3 = boto3.client("s3")
 
@@ -38,41 +38,44 @@ def handler(event, context):
 
         tool_input = event.get("input") or {}
         out_prefix = (event.get("work_dir") or "output").rstrip("/")
+        project_type = wall_heights.normalize_project_type(tool_input.get("project_type"))
         skip_pages = tool_input.get("skip_pages") or []
-        ignore_first_column = tool_input.get("ignore_first_column", True)
 
         pdf_bytes = s3.get_object(Bucket=bucket, Key=input_key)["Body"].read()
-        tables = main2.process_pdf(pdf_bytes, skip_pages=skip_pages)
+        walls = wall_heights.process_pdf(pdf_bytes, project_type=project_type, skip_pages=skip_pages)
 
-        if not tables:
+        if not walls:
             return {
                 "status": "ok",
-                "summary": "No plant legends or material schedules were detected in this PDF.",
+                "summary": (
+                    "No wall elevation (TW/BW) markups were detected in this PDF, so there "
+                    "were no wall heights to calculate."
+                ),
                 "artifacts": [],
                 "error": None,
             }
 
-        base = os.path.splitext(os.path.basename(input_key))[0] or "schedules"
-        out_name = f"{base}.xlsx"
+        base = os.path.splitext(os.path.basename(input_key))[0] or "walls"
+        out_name = f"{base}-wall-heights.xlsx"
         local_path = f"/tmp/{out_name}"
-        main2.save_excel(tables, local_path, ignore_first_column=ignore_first_column)
+        wall_heights.save_excel(walls, local_path)
 
         out_key = f"{out_prefix}/{out_name}"
         with open(local_path, "rb") as f:
             s3.put_object(Bucket=bucket, Key=out_key, Body=f.read())
         os.remove(local_path)
 
-        n_pages = len(tables)
-        n_scheds = sum(len(v) for v in tables.values())
+        n_walls = len(walls)
+        n_with_height = sum(1 for w in walls.values() if w.get("ht_round") is not None)
         summary = (
-            f"Extracted {n_scheds} schedule{'s' if n_scheds != 1 else ''} "
-            f"across {n_pages} page{'s' if n_pages != 1 else ''} into {out_name}."
+            f"Calculated heights for {n_with_height} wall(s) (of {n_walls} detected) using "
+            f"{project_type} rounding into {out_name}."
         )
         return {
             "status": "ok",
             "summary": summary,
             "artifacts": [
-                {"kind": "xlsx", "ref": out_key, "filename": out_name, "title": "Extracted schedules"}
+                {"kind": "xlsx", "ref": out_key, "filename": out_name, "title": "Wall heights"}
             ],
             "error": None,
         }

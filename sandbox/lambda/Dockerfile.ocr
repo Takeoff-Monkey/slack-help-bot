@@ -1,0 +1,33 @@
+# Container image for the NEURAL-OCR run_code sandbox Lambda (tm-sandbox-runcode-ocr).
+# A strict superset of the default image (Dockerfile): everything in the extended toolkit PLUS
+# RapidOCR (rapidocr-onnxruntime) + onnxruntime for accurate OCR on messy/rotated/low-quality
+# scans. The bot escalates here only when default-environment Tesseract output looks poor.
+#
+# Build context is the sandbox dir (template.yaml DockerContext: ..).
+FROM public.ecr.aws/lambda/python:3.12
+
+# Same OCR system binaries as the default image (Tesseract via SPAL + poppler). See Dockerfile.
+RUN dnf install -y spal-release && \
+    dnf install -y --setopt=install_weak_deps=0 --nodocs \
+        tesseract tesseract-langpack-eng poppler-utils && \
+    dnf clean all && rm -rf /var/cache/dnf
+
+COPY requirements.txt requirements-ocr.txt ./
+
+# Extended toolkit first (brings opencv-python-headless, Pillow, numpy, ...).
+RUN pip install --no-cache-dir -r requirements.txt -t "${LAMBDA_TASK_ROOT}"
+
+# Neural tier with --no-deps: requirements-ocr.txt lists every runtime dep explicitly, so
+# rapidocr-onnxruntime does NOT pull the full opencv-python (which needs libGL and crashes on
+# this minimal image). cv2 is provided by opencv-python-headless from the step above.
+RUN pip install --no-cache-dir --no-deps -r requirements-ocr.txt -t "${LAMBDA_TASK_ROOT}"
+
+COPY lambda/handler.py "${LAMBDA_TASK_ROOT}/"
+
+# Fail the build early if anything (incl. the bundled offline RapidOCR models) can't load, and
+# assert the full opencv-python was NOT pulled in (its libs dir would drag in libGL and crash).
+RUN PYTHONPATH="${LAMBDA_TASK_ROOT}" python -c "import cv2, pytesseract, fitz, pandas; from rapidocr_onnxruntime import RapidOCR; RapidOCR(); print('neural OCR image OK')" && \
+    tesseract --list-langs && \
+    test ! -d "${LAMBDA_TASK_ROOT}/opencv_python.libs"
+
+CMD ["handler.handler"]

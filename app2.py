@@ -85,8 +85,9 @@ CANVAS_SYNC_INTERVAL = int(os.environ.get("CANVAS_SYNC_INTERVAL_SECONDS", "600")
 # Two-tier model setup: Haiku for the cheap selector (structured JSON pick),
 # Sonnet for the answer (reading + summarizing skill docs in Slack-friendly prose).
 # Opus would be overkill for both — this is grounded retrieval, not deep reasoning.
-SELECTOR_MODEL = "claude-haiku-4-5"
-ANSWER_MODEL = "claude-sonnet-4-6"
+# Model IDs are env-overridable so they can be bumped without a code change.
+SELECTOR_MODEL = os.environ.get("SELECTOR_MODEL", "claude-haiku-4-5")
+ANSWER_MODEL = os.environ.get("ANSWER_MODEL", "claude-sonnet-5")
 MAX_SKILLS_PER_QUESTION = 5
 MAX_SLACK_MESSAGE_CHARS = 3800
 

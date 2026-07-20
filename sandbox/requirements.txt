@@ -1,7 +1,26 @@
-# Libraries available to model-written code in the run_code sandbox.
-# Kept deliberately small: stdlib + the PDF/data essentials the bot's fallback needs.
-# These are installed in sandbox/.venv and are NOT part of the bot's own environment.
-PyMuPDF
-pandas
-Pillow
-openpyxl
+# Libraries available to model-written code in the run_code "default" sandbox environment.
+# This is the EXTENDED toolkit: PDF/data essentials + Tesseract OCR + image preprocessing +
+# document generation. Installed into sandbox/.venv (local) and the default Lambda image
+# (tm-sandbox-runcode). These are NOT part of the bot's own environment.
+#
+# The heavier neural-OCR engine lives in requirements-ocr.txt (the "neural_ocr" environment),
+# which is layered ON TOP of this file — see setup.sh / sandbox/lambda/Dockerfile.ocr.
+
+# --- core PDF / data / spreadsheet ---
+PyMuPDF                   # fitz — read/rasterize/edit PDFs
+pandas                    # tabular data (pulls in numpy, which is also available directly)
+Pillow                   # PIL — image IO/manipulation
+openpyxl                 # read/write .xlsx
+
+# --- OCR + image preprocessing (raster files with no text layer) ---
+pytesseract              # Tesseract OCR wrapper — needs the `tesseract` system binary
+opencv-python-headless   # cv2 — grayscale/threshold/deskew/denoise; big OCR accuracy boost
+pdf2image                # rasterize PDF pages via poppler — needs the `pdftoppm` system binary
+pdfplumber               # text + table extraction from text-layer PDFs
+
+# --- document generation / parsing ---
+python-docx              # Word .docx
+python-pptx              # PowerPoint .pptx
+reportlab                # build PDFs from scratch
+XlsxWriter               # rich Excel writing (charts/formatting), complements openpyxl
+tabulate                 # quick plain-text tables

@@ -9,7 +9,7 @@ import boto3
 from PIL import Image
 from textractcaller.t_call import call_textract, Textract_Features
 from textractprettyprinter.t_pretty_print import Pretty_Print_Table_Format, Textract_Pretty_Print, get_string
-from openai import OpenAI
+import anthropic
 import base64
 from dotenv import load_dotenv
 
@@ -21,9 +21,9 @@ if not os.getenv('AWS_ACCESS_KEY_ID'):
     print("Warning: AWS credentials not found in environment.")
 
 # Only built when a key is present so the module imports cleanly in environments where the
-# OpenAI client isn't needed (e.g. a Lambda with GPT_CLEANUP off). save_excel's GPT path is
+# Anthropic client isn't needed (e.g. a Lambda with AI_CLEANUP off). save_excel's AI path is
 # guarded, so a None client is safe.
-client = OpenAI(api_key=os.getenv('OPENAI_API_KEY')) if os.getenv('OPENAI_API_KEY') else None
+client = anthropic.Anthropic() if os.getenv('ANTHROPIC_API_KEY') else None
 
 # AWS Settings
 BUCKET = "test-s3-schedule-extractor-1-2026-03-17"
@@ -31,7 +31,13 @@ IN_PREFIX = "input"
 OUT_PREFIX = "output"
 
 # Perform extra formatting, like fixing any typos in the original PDF
-GPT_CLEANUP = False
+AI_CLEANUP = False
+# Claude model IDs — env-overridable so they can be bumped without a code change
+# (set these in the tool's .env locally, or on the Lambda via template.yaml).
+# CLEANUP_MODEL: the active AI cleanup pass in save_excel (only used when AI_CLEANUP is on).
+# VISION_MODEL: the (currently unused) vision table-extraction fallback.
+CLEANUP_MODEL = os.getenv("CLEANUP_MODEL", "claude-sonnet-5")
+VISION_MODEL = os.getenv("VISION_MODEL", "claude-haiku-4-5")
 # Often the first column will be a list of random symbols/codes, so we can ignore it
 IGNORE_FIRST_COLUMN = True
 # Specific page indices to skip across all PDFs (e.g. cover pages)
@@ -255,40 +261,42 @@ def extract_table_data(image_bytes):
         print(table)
     return table
 
-# OpenAI Vision (unused; less accurate & slower. Do not use!)
+# Claude Vision (unused; less accurate & slower. Do not use!)
 def extract_table_data_vision(image_bytes):
     img_b64_str = base64.b64encode(image_bytes).decode('utf-8')
     img_type = 'image/png'
 
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
+    response = client.messages.create(
+        model=VISION_MODEL,
+        max_tokens=4096,
         messages=[
             {
                 "role": "user",
                 "content": [
                     {"type": "text", "text": "Extract the table from the following image, and return in a JSON-only format that can easily be converted to a Pandas DataFrame (without including any extra information or codeblock formatting)."},
                     {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:{img_type};base64,{img_b64_str}"},
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": img_type, "data": img_b64_str},
                     }
                 ]
             }
         ]
     )
 
+    content = next((b.text for b in response.content if b.type == "text"), "")
     if DEBUG:
-        print(response.choices[0].message.content)
-    return response.choices[0].message.content
+        print(content)
+    return content
 
 # Process data into an excel file, separated into tabs by each schedule of each page.
-# ignore_first_column / gpt_cleanup default to the module-level constants but can be
+# ignore_first_column / ai_cleanup default to the module-level constants but can be
 # overridden per call (the AI-callable run.py entrypoint passes them through).
 def save_excel(data : dict, filename : str, stripped : bool = False,
-               ignore_first_column : bool = None, gpt_cleanup : bool = None):
+               ignore_first_column : bool = None, ai_cleanup : bool = None):
     if ignore_first_column is None:
         ignore_first_column = IGNORE_FIRST_COLUMN
-    if gpt_cleanup is None:
-        gpt_cleanup = GPT_CLEANUP
+    if ai_cleanup is None:
+        ai_cleanup = AI_CLEANUP
     with pd.ExcelWriter(filename) as writer:
         for page_num, page_data in data.items():
             for i, table_data in enumerate(page_data):
@@ -309,10 +317,10 @@ def save_excel(data : dict, filename : str, stripped : bool = False,
                 except Exception:
                     df = pd.DataFrame(table_data)
                 
-                # Extra GPT excel formatting cleanup
+                # Extra AI (Claude) excel formatting cleanup
                 # This is for funnsies, so if it fails, no big deal; move on
                 try:
-                    if not gpt_cleanup:
+                    if not ai_cleanup:
                         raise Exception
                     instructions = [
                         """
@@ -334,19 +342,20 @@ def save_excel(data : dict, filename : str, stripped : bool = False,
                         """
                     ]
 
-                    response = client.chat.completions.create(
+                    response = client.messages.create(
+                        model=CLEANUP_MODEL,
+                        max_tokens=16000,
+                        thinking={"type": "disabled"},
+                        system=instructions[0],
                         messages=[
-                            {"role": "system", "content": instructions[0]},
                             {"role": "user", "content": f"{df.to_json(orient='split')}"}
                         ],
-                        temperature=0.0,
-                        top_p=0.0,
-                        model="gpt-4o"
                     )
 
+                    cleaned = next(b.text for b in response.content if b.type == "text")
                     if DEBUG:
-                        print(response.choices[0].message.content)
-                    df = pd.read_json(StringIO(response.choices[0].message.content), orient='split')
+                        print(cleaned)
+                    df = pd.read_json(StringIO(cleaned), orient='split')
                 except:
                     pass
 

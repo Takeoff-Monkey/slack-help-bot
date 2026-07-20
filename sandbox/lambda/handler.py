@@ -55,6 +55,8 @@ def handler(event, context):
 
         # Scrubbed env: PATH + PYTHONPATH (to reach the image's site-packages) + the two
         # contract vars. NO AWS_*/secret vars — model code cannot touch the role creds.
+        # TESSDATA_PREFIX points pytesseract at the language data installed in the image;
+        # OMP_NUM_THREADS keeps onnxruntime/opencv from oversubscribing the function's vCPUs.
         env = {
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
             "PYTHONPATH": os.environ.get("LAMBDA_TASK_ROOT", "/var/task"),
@@ -62,7 +64,10 @@ def handler(event, context):
             "LANG": "C.UTF-8",
             "PYTHONUNBUFFERED": "1",
             "OUTPUT_DIR": OUTPUT_DIR,
+            "OMP_NUM_THREADS": os.environ.get("SANDBOX_OMP_NUM_THREADS", "4"),
         }
+        if os.environ.get("TESSDATA_PREFIX"):
+            env["TESSDATA_PREFIX"] = os.environ["TESSDATA_PREFIX"]
         if input_key:
             env["INPUT_FILE"] = INPUT_PATH
 

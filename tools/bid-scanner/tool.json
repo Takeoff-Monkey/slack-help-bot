@@ -1,0 +1,36 @@
+{
+  "name": "bid-scanner",
+  "version": "1",
+  "description": "Scan a PDF (bid, spec, or plan set) for a list of keywords, highlight every match in the PDF, and produce a spreadsheet tallying how many times each keyword appears and on which pages.",
+  "when_to_use": "Use when the user attaches a PDF and asks to scan, search, or highlight it for keywords/terms — e.g. \"highlight every mention of fence and gate\", \"scan this bid for these scopes\", or \"find where 'bollard' shows up\". If the user names keywords, pass exactly those; if they don't name any, OMIT the keywords field and the tool falls back to its standard bid-scope keyword set. Do NOT use for extracting structured schedule/legend tables (that's schedule-extractor) or for answering free-text questions about a document.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "input_file": {
+        "type": "string",
+        "description": "Handle of the attached PDF to scan, e.g. \"file_1\". Must be one of the file handles listed in the conversation."
+      },
+      "keywords": {
+        "type": "array",
+        "items": { "type": "string" },
+        "default": ["chain", "link", "ornamental", "fenc", "gate", "operator", "wood", "steel", "bollard", "barrier", "wedge", "crash", "turnstile", "temporary", "rail"],
+        "description": "Keywords/terms to search for (case-insensitive substring match). Provide these ONLY if the user specified terms; if they did not, omit this field entirely so the tool uses its standard bid-scope keyword set (chain, link, ornamental, fenc, gate, operator, wood, steel, bollard, barrier, wedge, crash, turnstile, temporary, rail)."
+      },
+      "skip_pages": {
+        "type": "array",
+        "items": { "type": "integer" },
+        "default": [],
+        "description": "Zero-based page indices to skip (e.g. a cover sheet). Empty means scan every page."
+      }
+    },
+    "required": ["input_file"],
+    "additionalProperties": false
+  },
+  "accepts": { "file_types": ["pdf"], "max_files": 1 },
+  "output": "A highlighted copy of the PDF (every keyword match highlighted) plus an .xlsx workbook listing each matched keyword, its total occurrence count, and the pages it appears on. If no keyword matches, no files are produced and a short note is returned instead.",
+  "entrypoint": {
+    "local": { "type": "subprocess", "cmd": ["run.py"], "cwd": "tools/bid-scanner" },
+    "lambda": { "type": "lambda", "function_name": "tm-tool-bid-scanner" }
+  },
+  "timeout_seconds": 300
+}

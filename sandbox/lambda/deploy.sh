@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Deploy the run_code sandbox Lambda (container image) with AWS SAM.
+# Deploy the run_code sandbox Lambdas (container images) with AWS SAM. The stack defines TWO
+# functions and `sam build` builds BOTH images: tm-sandbox-runcode (default extended toolkit)
+# and tm-sandbox-runcode-ocr (adds the RapidOCR neural engine).
 # Prereqs: awscli configured, docker running, sam CLI installed.
 #
 # Usage:
@@ -21,4 +23,6 @@ else
     --parameter-overrides "ScratchBucket=${SCRATCH_BUCKET}"
 fi
 
-echo "Deployed tm-sandbox-runcode. The bot uses it automatically when TOOL_BACKEND=lambda."
+echo "Deployed tm-sandbox-runcode + tm-sandbox-runcode-ocr."
+echo "The bot uses them automatically when TOOL_BACKEND=lambda (defaults match SANDBOX_LAMBDA_NAME"
+echo "and SANDBOX_LAMBDA_NAME_OCR; override those env vars only if you renamed the functions)."

@@ -1,0 +1,45 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  bid-scanner tool as a synchronous (request/response) Lambda for the Takeoff Monkey Slack
+  bot. Reads a PDF from the scratch S3 bucket, highlights keyword matches with PyMuPDF and
+  tallies them into an .xlsx, writes both back to S3, returns a JSON result. No other AWS
+  services are used.
+
+Parameters:
+  ScratchBucket:
+    Type: String
+    Description: S3 bucket the bot stages inputs to and reads outputs from.
+
+Globals:
+  Function:
+    Timeout: 300
+    MemorySize: 2048
+
+Resources:
+  BidScannerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: tm-tool-bid-scanner
+      PackageType: Image
+      Architectures: [x86_64]
+      Environment:
+        Variables:
+          SCRATCH_S3_BUCKET: !Ref ScratchBucket
+      Policies:
+        # Scratch bucket only (least privilege) — read inputs, write outputs.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+              Resource: !Sub "arn:aws:s3:::${ScratchBucket}/*"
+    Metadata:
+      Dockerfile: lambda/Dockerfile
+      DockerContext: ..          # the tool dir (so scanner.py + requirements.txt are in scope)
+      DockerTag: latest
+
+Outputs:
+  FunctionName:
+    Value: !Ref BidScannerFunction
+    Description: Set this as the bot's tool.json entrypoint.lambda.function_name (already tm-tool-bid-scanner).

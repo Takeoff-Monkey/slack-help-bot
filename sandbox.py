@@ -38,11 +38,26 @@ def run_code_tool_def() -> dict:
     return {
         "name": "run_code",
         "description": (
-            "Execute a short Python 3 script in a sandbox to perform an operation no other "
-            "tool covers (e.g. highlight a word in a PDF, split/merge pages, convert a file). "
-            "Use this only when no registered tool fits.\n\n"
+            "Execute a short Python 3 script in a sandbox to perform an operation no registered "
+            "tool covers — e.g. OCR a scanned/raster image or a text-less PDF, highlight a word "
+            "in a PDF, split/merge/convert files, or build a spreadsheet/Word/PDF. Use this only "
+            "when no registered tool fits.\n\n"
+            "Two environments are available via the `environment` field:\n"
+            "- \"default\" (use this FIRST): Tesseract OCR (`pytesseract` + the `tesseract` "
+            "binary), `cv2` (OpenCV, image preprocessing), `fitz` (PyMuPDF), `pdfplumber`, "
+            "`pdf2image`, `pandas`, `numpy`, `PIL` (Pillow), `openpyxl`/`xlsxwriter`, "
+            "`docx` (python-docx), `pptx` (python-pptx), `reportlab`, `tabulate`, and the "
+            "standard library.\n"
+            "- \"neural_ocr\": everything in default PLUS `rapidocr_onnxruntime` (RapidOCR), a "
+            "neural OCR engine that is far more accurate on messy, rotated, low-quality, or "
+            "photographed scans but is slower to start. Escalate to it ONLY if you already ran "
+            "OCR in the default environment and the text came back garbled, empty, or "
+            "low-confidence.\n\n"
+            "OCR tips: for raster images, preprocess with cv2 (grayscale, ~2x upscale, Otsu "
+            "threshold, deskew) before Tesseract — it substantially improves accuracy. Inspect "
+            "`pytesseract.image_to_data(..., output_type=Output.DICT)` word confidences to judge "
+            "whether the result is good enough or you should escalate to \"neural_ocr\".\n\n"
             "Environment available to your script:\n"
-            "- `fitz` (PyMuPDF), `pandas`, `PIL` (Pillow), and the Python standard library.\n"
             "- env var `INPUT_FILE`: absolute path to the attached file you named in `input_file` "
             "(absent if you didn't name one).\n"
             "- env var `OUTPUT_DIR`: write every file you want returned to the user into this "
@@ -59,6 +74,16 @@ def run_code_tool_def() -> dict:
                     "type": "string",
                     "description": "Optional handle (e.g. file_1) of an attached file to expose as INPUT_FILE.",
                 },
+                "environment": {
+                    "type": "string",
+                    "enum": ["default", "neural_ocr"],
+                    "default": "default",
+                    "description": (
+                        "Which sandbox environment to run in. Use \"default\" first. Escalate to "
+                        "\"neural_ocr\" only when default-environment OCR produced poor, garbled, "
+                        "or empty text."
+                    ),
+                },
             },
             "required": ["code"],
             "additionalProperties": False,
@@ -66,9 +91,14 @@ def run_code_tool_def() -> dict:
     }
 
 
-def _sandbox_python() -> str:
-    venv = SANDBOX_DIR / ".venv" / "bin" / "python"
-    return str(venv) if venv.exists() else "python3"
+# Local venv directory per environment; the neural venv is a superset of the default one.
+_VENV_BY_ENV = {"default": ".venv", "neural_ocr": ".venv-ocr"}
+
+
+def _sandbox_python(environment: str = "default") -> Path:
+    """Path to the venv interpreter for an environment. May not exist yet (setup.sh not run for
+    this tier) — the caller checks and returns a clear error rather than silently degrading."""
+    return SANDBOX_DIR / _VENV_BY_ENV.get(environment, ".venv") / "bin" / "python"
 
 
 def _collect_artifacts(output_dir: str) -> list[dict]:
@@ -82,7 +112,17 @@ def _collect_artifacts(output_dir: str) -> list[dict]:
     return arts
 
 
-def _run_local(code: str, input_path: str | None, staging, logger) -> ToolInvocationResult:
+def _run_local(code: str, input_path: str | None, staging, logger, environment: str = "default") -> ToolInvocationResult:
+    # Fail clearly if this environment's venv isn't built (e.g. setup.sh not re-run after the
+    # neural tier was added), instead of silently running under the system python (which lacks
+    # every sandbox dep and would surface an opaque ModuleNotFoundError). Mirrors tool_runner.
+    venv_python = _sandbox_python(environment)
+    if not venv_python.exists():
+        return ToolInvocationResult.err(
+            f"The {environment!r} sandbox isn't set up yet (missing sandbox/{_VENV_BY_ENV[environment]}). "
+            f"Run sandbox/setup.sh to build it."
+        )
+
     run_dir = os.path.join(staging.root, f"sandbox-{uuid.uuid4().hex[:8]}")
     output_dir = os.path.join(run_dir, "output")
     os.makedirs(output_dir, exist_ok=True)
@@ -91,19 +131,21 @@ def _run_local(code: str, input_path: str | None, staging, logger) -> ToolInvoca
         f.write(code)
 
     # Scrubbed env — explicitly allowlisted, so process-env secrets never reach model code.
+    # OMP/onnxruntime thread caps keep a neural-OCR run from oversubscribing every core.
     env = {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         "HOME": run_dir,
         "LANG": "C.UTF-8",
         "PYTHONUNBUFFERED": "1",
         "OUTPUT_DIR": output_dir,
+        "OMP_NUM_THREADS": os.environ.get("SANDBOX_OMP_NUM_THREADS", "4"),
     }
     if input_path:
         env["INPUT_FILE"] = input_path
 
     try:
         proc = subprocess.run(
-            [_sandbox_python(), snippet],
+            [str(venv_python), snippet],
             cwd=run_dir,
             env=env,
             capture_output=True,
@@ -137,8 +179,15 @@ def _run_local(code: str, input_path: str | None, staging, logger) -> ToolInvoca
     return ToolInvocationResult(status="ok", summary=summary, artifacts=artifacts, work_dir=run_dir)
 
 
-def _run_lambda(code: str, input_key: str | None, staging, logger) -> ToolInvocationResult:
-    fn = os.environ.get("SANDBOX_LAMBDA_NAME", "tm-sandbox-runcode")
+def _lambda_function_name(environment: str) -> str:
+    """The default and neural-OCR sandboxes are two separate Lambdas (different images)."""
+    if environment == "neural_ocr":
+        return os.environ.get("SANDBOX_LAMBDA_NAME_OCR", "tm-sandbox-runcode-ocr")
+    return os.environ.get("SANDBOX_LAMBDA_NAME", "tm-sandbox-runcode")
+
+
+def _run_lambda(code: str, input_key: str | None, staging, logger, environment: str = "default") -> ToolInvocationResult:
+    fn = _lambda_function_name(environment)
     out_prefix = f"{staging.root}/sandbox-{uuid.uuid4().hex[:8]}/output"
     payload = {"code": code, "input_path": input_key, "work_dir": out_prefix,
                "bucket": staging.bucket, "backend": "lambda"}
@@ -171,6 +220,11 @@ def run_code(tool_input: dict, staging, logger) -> ToolInvocationResult:
     if len(code) > MAX_CODE_CHARS:
         return ToolInvocationResult.err(f"Code too long ({len(code)} chars, max {MAX_CODE_CHARS}).")
 
+    # Which environment to run in. Anything unrecognized falls back to the lean default.
+    environment = tool_input.get("environment") or "default"
+    if environment not in _VENV_BY_ENV:
+        environment = "default"
+
     input_path = None
     handle = tool_input.get("input_file")
     if handle:
@@ -181,10 +235,12 @@ def run_code(tool_input: dict, staging, logger) -> ToolInvocationResult:
             )
         input_path = staged.ref
 
+    logger.info("run_code: backend=%s environment=%s input=%s code_chars=%d",
+                SANDBOX_BACKEND, environment, bool(input_path), len(code))
     try:
         if SANDBOX_BACKEND == "lambda":
-            return _run_lambda(code, input_path, staging, logger)
-        return _run_local(code, input_path, staging, logger)
+            return _run_lambda(code, input_path, staging, logger, environment)
+        return _run_local(code, input_path, staging, logger, environment)
     except Exception as err:
         logger.exception("Sandbox crashed")
         return ToolInvocationResult.err(f"{type(err).__name__}: {err}")

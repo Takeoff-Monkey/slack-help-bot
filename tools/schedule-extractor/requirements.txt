@@ -4,6 +4,6 @@ boto3
 Pillow
 amazon-textract-caller
 amazon-textract-prettyprinter
-openai
+anthropic
 python-dotenv
 xlsxwriter

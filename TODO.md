@@ -1,0 +1,1 @@
+- setup a DB for storing personalized user data the AI can access as needed

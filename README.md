@@ -63,6 +63,9 @@ Bot expects these env vars on Heroku:
 | `ANTHROPIC_API_KEY` | `sk-ant-…` |
 | `ALLOWED_USERS` | Comma-separated Slack user IDs (e.g. `U01XXX,U02YYY`). If unset, bot responds to everyone (production). If set, only those users get answers — use for testing. |
 | `SKILL_DOCS_BASE_URL` | e.g. `https://takeoff-monkey.github.io/slack-help-bot/skills` — if set, Sources footer links to the HTML docs. If unset, sources shown as plain text. |
+| `SELECTOR_MODEL` | Claude model for the cheap routing/skill-picker call. Default `claude-haiku-4-5`. |
+| `ANSWER_MODEL` | Claude model for Q&A answers. Default `claude-sonnet-5`. |
+| `ACTION_MODEL` | Claude model for the tool-use loop. Default `claude-sonnet-5`. |
 
 ## Edit the knowledge base
 
@@ -114,3 +117,6 @@ print(WebClient(token=os.environ['SLACK_BOT_TOKEN']).auth_test().data)
 ```
 
 Returns the workspace, bot username, user ID, and app ID — useful when DMs aren't reaching the bot.
+
+## Resources
+- [Slack App](https://api.slack.com/apps/A0B54VC7CG3/install-on-team?success=1)

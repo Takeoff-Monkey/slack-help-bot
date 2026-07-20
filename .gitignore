@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 *.so
 .venv/
+.venv-ocr/
 env/
 *.egg-info/
 
@@ -23,6 +24,7 @@ tools/**/.env
 tools/**/.venv/
 tools/**/__pycache__/
 sandbox/.venv/
+sandbox/.venv-ocr/
 sandbox/**/__pycache__/
 
 # AWS SAM build output (container Lambdas)

@@ -1,0 +1,35 @@
+# Neural-OCR tier — the "neural_ocr" run_code environment.
+#
+# Installed ON TOP OF requirements.txt, but with `pip install --no-deps` (see setup.sh and
+# sandbox/lambda/Dockerfile.ocr). Why --no-deps: rapidocr-onnxruntime declares `opencv-python`
+# (the FULL build, which dlopens libGL) as a dependency; on a minimal Lambda/AL2023 image that
+# crashes at import with "libGL.so.1: cannot open shared object file". We already ship
+# `opencv-python-headless` (from requirements.txt), which provides the same `cv2` module without
+# libGL — so we install the neural packages with their deps turned OFF and list every remaining
+# runtime dependency explicitly below. numpy + Pillow + opencv(-headless) come from requirements.txt.
+#
+# This environment therefore has everything the default one has, PLUS a heavier, more accurate OCR
+# engine for messy / rotated / low-quality / photographed scans that Tesseract struggles with.
+#
+# Pinned deliberately (unlike requirements.txt) — this tier is fragile:
+#  - The distribution NAME is the linchpin: `rapidocr-onnxruntime` bundles the PP-OCRv4 ONNX
+#    models INSIDE the wheel (~15MB), so it runs with NO network (verified by running inference
+#    with the socket layer disabled). The newer `rapidocr` (2.x/3.x) DOWNLOADS models from
+#    ModelScope on first use and WOULD fail in this no-egress sandbox. Do not "upgrade" to it.
+#  - onnxruntime (CPU) — never onnxruntime-gpu on Lambda (pulls absent CUDA libs).
+
+# --- neural engine (models bundled; offline) ---
+rapidocr-onnxruntime==1.4.4
+onnxruntime==1.27.0
+
+# --- rapidocr / onnxruntime runtime deps that requirements.txt does NOT already provide ---
+# (numpy, Pillow, opencv-python-headless are supplied by requirements.txt; opencv-python is
+#  deliberately excluded — see the --no-deps note above.)
+pyclipper
+PyYAML
+Shapely
+six
+tqdm
+flatbuffers
+protobuf
+packaging
