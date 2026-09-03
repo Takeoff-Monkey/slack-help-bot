@@ -49,6 +49,13 @@ urllib.request.urlopen("https://slack.com", context=ssl_context)
 
 load_dotenv()
 
+# Configure logging BEFORE the Bolt App is built, not in __main__ as before. Bolt copies the
+# root logger's level into its own loggers at construction time, so the old late basicConfig()
+# left every listener logger stuck at WARNING — which is why not one of the bot's INFO lines
+# ("agent: step 2/6 …", "run_code: backend=lambda …") ever reached the Heroku logs, and a
+# failing turn showed up only as a row of httpx 200s.
+logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
+
 SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
 SLACK_APP_TOKEN = os.environ["SLACK_APP_TOKEN"]
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
@@ -129,6 +136,10 @@ except Exception as e:
     BOT_USER_ID = None
 
 MAX_HISTORY_MESSAGES = 10
+# How many thread messages to pull to find those 10 turns. A turn now leaves its progress
+# lines in the thread as well as its answer, so fetching MAX_HISTORY_MESSAGES + 1 would come
+# back as mostly scaffolding and the real conversation would be filtered away to nothing.
+HISTORY_FETCH_LIMIT = 100
 
 SLACK_MENTION_RE = re.compile(r"<@[A-Z0-9]+>")
 STYLE_BLOCK_RE = re.compile(r"<style[^>]*>.*?</style>", re.IGNORECASE | re.DOTALL)
@@ -234,7 +245,7 @@ def get_conversation_history(channel: str, thread_ts: str, current_ts: str, logg
     Returns [] on any failure — the bot still works without history."""
     try:
         resp = app.client.conversations_replies(
-            channel=channel, ts=thread_ts, limit=MAX_HISTORY_MESSAGES + 1
+            channel=channel, ts=thread_ts, limit=HISTORY_FETCH_LIMIT
         )
         raw = resp.get("messages", [])
     except Exception:
@@ -246,9 +257,10 @@ def get_conversation_history(channel: str, thread_ts: str, current_ts: str, logg
         if msg.get("ts") == current_ts:
             continue
         text = (msg.get("text") or "").strip()
-        # Skip the placeholder and any status line a turn left behind (only possible if the
-        # dyno died mid-turn) — they're scaffolding, not something the bot actually said.
-        if not text or text == THINKING_PLACEHOLDER or text.startswith(status.WORKING):
+        # Skip the progress lines every turn leaves behind — the placeholder, "Running X…",
+        # "Still on it (42s)". They're the bot thinking out loud, not part of the
+        # conversation. Snags and final answers are real statements and stay.
+        if status.is_progress_line(text):
             continue
         is_bot = msg.get("user") == BOT_USER_ID or bool(msg.get("bot_id"))
         if is_bot:
@@ -488,8 +500,10 @@ def respond_to_question(question, history, staging, prefetched_skill_ids, report
         return agent_loop.AgentResult(text=answer)
     except anthropic.RateLimitError:
         logger.exception("Anthropic rate limit hit")
+        # Not the hourglass, however apt: that's the progress-line prefix, and a line starting
+        # with it is treated as scaffolding and dropped from thread history (status.is_progress_line).
         return agent_loop.AgentResult(
-            text=":hourglass_flowing_sand: I'm getting rate-limited by the model API and have "
+            text=":warning: I'm getting rate-limited by the model API and have "
                  "stopped. Nothing is still running — try me again in a minute.", failed=True)
     except anthropic.APIError as e:
         logger.exception("Anthropic API error")
@@ -511,9 +525,6 @@ def is_allowed(user_id: str | None) -> bool:
     if not ALLOWED_USERS:
         return True
     return user_id in ALLOWED_USERS
-
-
-THINKING_PLACEHOLDER = status.THINKING_PLACEHOLDER
 
 
 def recent_thread_files(channel: str, thread_ts: str, logger) -> list[dict]:
@@ -538,15 +549,16 @@ def recent_thread_files(channel: str, thread_ts: str, logger) -> list[dict]:
 
 
 def reply_with_thinking_indicator(question, channel, thread_ts, files, history, say, client, logger):
-    """Post a 'Thinking…' placeholder, generate the reply, then edit that message into the
-    real answer. On the action path it also shows short progress lines ("Running
-    schedule-extractor…") and uploads produced files into the thread.
+    """Post a 'Thinking…' placeholder, generate the reply, and narrate the work in between.
+    On the action path that means short progress lines ("Running schedule-extractor…") and
+    uploading produced files into the thread as they appear.
 
-    From the user's side, the whole turn is one promise: that message eventually says
-    something true. A status.Reporter owns it — it narrates progress, speaks up on its own
+    The first real line replaces the placeholder; each new thought after that is its own
+    message, so the thread reads back as a record of what the bot did rather than a single
+    line that overwrites itself. A status.Reporter owns all of it — it speaks up on its own
     after 30 seconds of silence, and, because every exit below runs through finish()/fail(),
-    it is never left reading "Thinking…" forever. That last part is the bug this fixes: any
-    exception outside the one try/except used to leave the bot looking busy for good.
+    the turn is never left reading "Thinking…" forever. That last part is the bug this fixes:
+    any exception outside the one try/except used to leave the bot looking busy for good.
     """
     with status.turn(channel, thread_ts, say, client, logger) as reporter:
         _run_turn(question, channel, thread_ts, files, history, say, client, logger, reporter)
@@ -626,9 +638,9 @@ def _run_turn(question, channel, thread_ts, files, history, say, client, logger,
             )
         text = result.text or "Done."
         if not reporter.finish(text):
-            # Editing the message failed (Slack hiccup, message deleted) — the answer still
-            # has to reach the user, so start a fresh one.
-            logger.warning("Could not update the turn's message; posting the answer separately")
+            # finish() already retries as a new message if editing fails, so False means Slack
+            # refused both. The answer still has to reach the user — try once more ourselves.
+            logger.warning("Could not deliver the answer via the reporter; retrying directly")
             try:
                 say(text=text, thread_ts=thread_ts)
             except Exception:
@@ -771,7 +783,6 @@ def handle_unexpected_listener_error(error, body, logger):
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
     mode = (
         f"private mode (allowlist: {sorted(ALLOWED_USERS)})"
         if ALLOWED_USERS

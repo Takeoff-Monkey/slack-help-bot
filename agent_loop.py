@@ -176,6 +176,20 @@ def _short(s, n: int = 300) -> str:
     return s if len(s) <= n else s[:n] + "…"
 
 
+def _append_user_text(messages: list, text: str) -> None:
+    """Put an instruction into the conversation as the final user content. Folds into the last
+    user turn when there is one (tool_results are a list of blocks; a nudge is a string), so we
+    never produce two consecutive user messages or orphan a tool_use block."""
+    if messages and messages[-1]["role"] == "user":
+        content = messages[-1]["content"]
+        if isinstance(content, list):
+            content.append({"type": "text", "text": text})
+        else:
+            messages[-1]["content"] = f"{content}\n\n{text}"
+    else:
+        messages.append({"role": "user", "content": text})
+
+
 def _model_failure_text(err: Exception, artifacts: list) -> str:
     """An honest, plain reply when the model call itself falls over. Previously this bubbled
     out of the loop and lost the trace and any files already produced."""
@@ -199,7 +213,12 @@ def _wrap_up_text(say: str, stop_reason, artifacts: list, last_error: str | None
     model saying nothing, reported *success*. Never claim an outcome we can't back up."""
     if say:
         if stop_reason == "max_tokens":
-            return say + "\n\n_(I ran out of room mid-answer — say 'continue' if that got cut off.)_"
+            say += "\n\n_(I ran out of room mid-answer — say 'continue' if that got cut off.)_"
+        if last_error:
+            # The model may well have written "let me try X" — a header makes the state
+            # unmistakable whatever it wrote: the last thing that happened was a failure and
+            # nothing more is running.
+            return f":warning: I hit a wall on this one and have stopped.\n\n{say}"
         return say
     if last_error:
         done = " The file(s) I did finish are attached above." if artifacts else ""
@@ -216,8 +235,9 @@ def _wrap_up_text(say: str, stop_reason, artifacts: list, last_error: str | None
 def run_agent(client, question, history, staging, tool_specs, reporter, on_artifacts, cancel_event, logger) -> AgentResult:
     """Drive the tool-use loop.
 
-    - reporter: the turn's voice (status.Reporter). `.say()` for a line the user should see
-      now, `.doing()` for what the 30-second watchdog narrates when the bot goes quiet,
+    - reporter: the turn's voice (status.Reporter). `.say()` posts a new thought the user
+      should see now, `.waiting()` restates the one we're already on (it replaces rather than
+      stacks), `.doing()` sets what the 30-second watchdog narrates when the bot goes quiet,
       `.snag()` the moment something goes wrong.
     - on_artifacts(list): uploads files the moment a tool produces them (output survives a
       later failure or the step cap).
@@ -313,26 +333,34 @@ def run_agent(client, question, history, staging, tool_specs, reporter, on_artif
             trace.append(f"ASSISTANT[{step + 1}]: {say}")
 
         if msg.stop_reason != "tool_use":
-            # The "silently drops off" case: a file is sitting there, the model says "on it —
-            # running the extractor now", and then just… stops. Its promise would become the
-            # final answer and the user would wait forever for work that never started. Poke
-            # it exactly once to either do the thing or say what's in the way.
+            # The "silently drops off" case, in both its forms. (a) A file is sitting there,
+            # the model says "on it — running the extractor now", and just… stops. (b) Its last
+            # tool call FAILED and it stops with "let me retry that" — the exact message seen in
+            # production, with nothing after it. Either way a promise would become the final
+            # answer and the user would wait forever. Poke it exactly once to act or to admit.
             # `not tool_calls` matters: a max_tokens/refusal turn can carry a half-written
-            # tool_use block. Appending a plain user message after that would leave a tool_use
-            # with no matching tool_result, which the API rejects outright.
-            if (msg.content and not tool_calls and not nudged and not used_a_tool
-                    and staging is not None and staging.files
+            # tool_use block, and a plain user message after that would leave a tool_use with no
+            # matching tool_result, which the API rejects outright.
+            if not used_a_tool and staging is not None and staging.files:
+                nudge = ("You stopped without calling any tool, so nothing has actually happened "
+                         "yet and the user is still waiting. Either do the work now with the right "
+                         "tool, or tell them plainly what is stopping you and what you need from "
+                         "them. Do not answer with a description of what you are about to do.")
+            elif last_error:
+                nudge = ("Your last tool call failed and you have stopped without calling another "
+                         "tool, so nothing further will run. If you are giving up, tell the user "
+                         "plainly: what you were trying to do, what went wrong, and what they could "
+                         "do about it. If you meant to keep going, make the tool call NOW. Never "
+                         "describe an action you are not actually taking.")
+            else:
+                nudge = None
+            if (nudge and msg.content and not tool_calls and not nudged
                     and step + 1 < MAX_TOOL_ITERATIONS):
                 nudged = True
-                trace.append(f"NUDGE[{step + 1}]: stopped without calling a tool")
-                logger.info("agent: model stopped without acting on %d file(s); nudging once",
-                            len(staging.files))
-                messages.append({"role": "user", "content": (
-                    "You stopped without calling any tool, so nothing has actually happened yet "
-                    "and the user is still waiting. Either do the work now with the right tool, "
-                    "or tell them plainly what is stopping you and what you need from them. Do "
-                    "not answer with a description of what you are about to do."
-                )})
+                trace.append(f"NUDGE[{step + 1}]: stopped without a tool call (last_error={bool(last_error)})")
+                logger.info("agent: model stopped without a tool call (last_error=%s); nudging once",
+                            bool(last_error))
+                messages.append({"role": "user", "content": nudge})
                 continue
 
             text = _wrap_up_text(say, msg.stop_reason, artifacts, last_error)
@@ -372,12 +400,15 @@ def run_agent(client, question, history, staging, tool_specs, reporter, on_artif
             trace.append(f"CALL[{step + 1}] {name}({_short(json.dumps(block.input), 300)})")
             used_a_tool = True
 
+            # notify= is the "still booting up, giving it 10 more seconds" channel: the same
+            # thought restated with a new number, so it uses waiting() to replace its previous
+            # line rather than posting a fresh message per retry.
             def _do(block=block, name=name):
                 if name == "run_code":
-                    return sandbox.run_code(block.input, staging, logger, notify=reporter.say)
+                    return sandbox.run_code(block.input, staging, logger, notify=reporter.waiting)
                 if name in tool_specs:
                     return tool_runner.run_tool(tool_specs[name], block.input, staging, logger,
-                                                notify=reporter.say)
+                                                notify=reporter.waiting)
                 return tool_runner.ToolInvocationResult.err(
                     f"Unknown tool {name!r}. Available: {sorted(tool_specs) + ['run_code', 'ask_user']}."
                 )
@@ -405,6 +436,8 @@ def run_agent(client, question, history, staging, tool_specs, reporter, on_artif
                 last_error = res.error or "unknown error"
                 reporter.snag(f"`{name}` hit a problem: {_short(last_error, 180)}")
                 reporter.doing("working out how to get around that")
+            else:
+                last_error = None      # a later success clears an earlier failure
             emit(res.artifacts)   # upload now — survives any later failure/timeout
             if res.work_dir:
                 work_dirs.append(res.work_dir)
@@ -423,25 +456,35 @@ def run_agent(client, question, history, staging, tool_specs, reporter, on_artif
     reporter.doing("writing up what I managed to do")
     logger.info("agent: hit step cap (%d); forcing finalize", MAX_TOOL_ITERATIONS)
     delivered = " The files I completed are attached above." if artifacts else ""
-    snag = f" The last thing that went wrong: {_short(last_error, 200)}." if last_error else ""
+    snag = f" The last thing that went wrong: {_short(last_error, 300)}." if last_error else ""
+    # A system-prompt suffix was not enough: mid-debugging, the model answered "Let me retry
+    # loading it now." and that became the last thing the user ever saw. The instruction now
+    # goes into the conversation itself, right where the model is looking, and the header
+    # below is fixed text so the state is unmistakable whatever it writes.
+    _append_user_text(messages, (
+        "You have used every step you had. Nothing further will run this turn, so do NOT "
+        "describe what you will do next — there is no next. Report to the user, briefly and "
+        "plainly: what they asked for, what you tried, what went wrong each time, and what "
+        "they could do now."
+    ))
+    header = f":warning: I ran out of steps before I could finish this.{delivered}"
     try:
-        # `tools` MUST stay: the history contains tool_use/tool_result blocks and the API
-        # rejects the call without their definitions — which is why this used to fail every
-        # single time and the user only ever saw the generic fallback below. tool_choice
-        # "none" is what actually keeps it from calling anything.
+        # `tools` stays because the history holds tool_use/tool_result blocks; tool_choice
+        # "none" is what actually keeps the model from calling anything.
         final = client.messages.create(
             model=ACTION_MODEL,
             max_tokens=MAX_TOKENS,
             thinking={"type": "disabled"},
-            system=ACTION_SYSTEM + "\n\nYou have reached the step limit. Tell the user plainly what you completed, what you did not, and what is standing in the way. Do not call any more tools.",
+            system=ACTION_SYSTEM,
             messages=messages,
             tools=tool_defs,
             tool_choice={"type": "none"},
             timeout=MODEL_TIMEOUT,
         )
-        text = _text_of(final) or f":warning: I hit my step limit before finishing.{delivered}{snag}"
+        summary = _text_of(final)
+        text = f"{header}\n\n{summary}" if summary else f"{header}{snag}"
     except Exception:
         logger.exception("force-finalize call failed")
-        text = f":warning: I hit my step limit before finishing.{delivered}{snag}"
+        text = f"{header}{snag}"
     trace.append(f"FINALIZE: {text}")
     return AgentResult(text=text, artifacts=artifacts, work_dirs=work_dirs, trace=trace)

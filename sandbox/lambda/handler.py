@@ -26,7 +26,19 @@ TIMEOUT = int(os.environ.get("SANDBOX_TIMEOUT_SECONDS", "120"))
 MAX_OUTPUT_CHARS = 8_000
 OUTPUT_DIR = "/tmp/output"
 SNIPPET = "/tmp/snippet.py"
-INPUT_PATH = "/tmp/input_file"
+# The attachment is staged under here WITH its original extension (see _input_path). It used
+# to be a bare /tmp/input_file, and openpyxl / pandas.read_excel refuse extensionless paths —
+# every spreadsheet request failed on the first line of the model's code.
+INPUT_DIR = "/tmp/input"
+
+
+def _input_path(input_key: str) -> str:
+    """/tmp/input/input<ext>, where <ext> comes from the staged S3 key (runs/<id>/input/
+    file_1-<original name>). Only a plain short suffix is trusted; anything odd gets none."""
+    ext = os.path.splitext(input_key)[1].lower()
+    if not (1 < len(ext) <= 9 and ext[1:].isalnum()):
+        ext = ""
+    return os.path.join(INPUT_DIR, f"input{ext}")
 
 
 def handler(event, context):
@@ -47,14 +59,16 @@ def handler(event, context):
 
         # /tmp persists across warm invocations — start clean each time.
         shutil.rmtree(OUTPUT_DIR, ignore_errors=True)
+        shutil.rmtree(INPUT_DIR, ignore_errors=True)
         os.makedirs(OUTPUT_DIR, exist_ok=True)
-        for stale in (SNIPPET, INPUT_PATH):
-            if os.path.exists(stale):
-                os.remove(stale)
+        os.makedirs(INPUT_DIR, exist_ok=True)
+        if os.path.exists(SNIPPET):
+            os.remove(SNIPPET)
 
         input_key = event.get("input_path")
+        input_path = _input_path(input_key) if input_key else None
         if input_key:
-            s3.download_file(bucket, input_key, INPUT_PATH)
+            s3.download_file(bucket, input_key, input_path)
 
         with open(SNIPPET, "w", encoding="utf-8") as f:
             f.write(code)
@@ -74,8 +88,8 @@ def handler(event, context):
         }
         if os.environ.get("TESSDATA_PREFIX"):
             env["TESSDATA_PREFIX"] = os.environ["TESSDATA_PREFIX"]
-        if input_key:
-            env["INPUT_FILE"] = INPUT_PATH
+        if input_path:
+            env["INPUT_FILE"] = input_path
 
         proc = subprocess.run(
             [sys.executable, SNIPPET],

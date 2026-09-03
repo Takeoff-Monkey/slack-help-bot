@@ -1,24 +1,39 @@
-"""The bot's voice while it's working — one status message per turn, plus a watchdog that
-refuses to let the bot go quiet.
+"""The bot's voice while it's working — a running commentary in the thread, plus a watchdog
+that refuses to let the bot go quiet.
 
-Before this, a turn posted ":hourglass: _Thinking…_" and then said nothing at all until it
-had a final answer. If anything in between stalled, or died on a path the one try/except
-didn't cover, that placeholder was the last thing the user ever saw: the bot looked busy
-forever while it was actually finished or dead.
+Originally a turn posted ":hourglass: _Thinking…_" and then said nothing at all until it had
+a final answer. That got fixed by narrating progress into that same placeholder — but editing
+one message means every new thought erases the last one. The user watched a single line
+flicker between "reading the plans" and "running the extractor" with no way to see what the
+bot had actually done, and a snag reported mid-turn was gone the moment the next line landed.
 
-A Reporter owns that message for the life of a turn:
-  say()      a progress line — the model's own preamble, or the loop's ("Running X…")
+So a turn now reads as a transcript. There are two kinds of line:
+
+  permanent  a new thought — say(), snag(), finish(), fail(). Each one is its OWN message, so
+             it stays put and the thread reads back as a record of what happened.
+  transient  scaffolding that restates the thought we're already on — the "Thinking…"
+             placeholder, the watchdog's "still on it (42s)" ticker, waiting() for "the
+             sandbox is still booting". These overwrite the previous transient line and are
+             themselves overwritten by the next real thought, so a ticker never piles up and
+             never outlives what it was ticking about.
+
+That's what makes the first real line replace "Thinking…" (the placeholder is transient) while
+the second one starts a new message.
+
+A Reporter owns that commentary for the life of a turn:
+  say()      a new thought — the model's own preamble, or the loop's ("Running X…")
+  waiting()  we're still on the same thought, just still waiting — replaces, doesn't stack
   doing()    sets the current activity so the watchdog can narrate it with no model call
   snag()     something went wrong but we're carrying on — the user hears about it NOW
-  finish()   the final answer; SEALS the message so nothing can overwrite it afterwards
+  finish()   the final answer; SEALS the turn so nothing can overwrite or follow it
   fail()     the turn died; an honest message instead of an eternal hourglass
-  note()     a brand-new message in the thread, for problems found after the seal
+  note()     a brand-new message, for problems found after the seal
 
 The watchdog thread wakes every second and, if nothing has been said for `idle_seconds`
 (30 by default), says where we're at and how long it's been. Every write goes through one
-lock and re-checks the seal while holding it, so a watchdog tick can never land on top of
-the final answer — the ordering that would otherwise turn "here's your file" back into
-"still working…".
+lock and re-checks the seal while holding it, so a watchdog tick can never land after the
+final answer — the ordering that would otherwise leave "still working…" as the last word in
+the thread.
 """
 
 from __future__ import annotations
@@ -50,17 +65,30 @@ def human(seconds: float) -> str:
     return f"{h}h {m:02d}m"
 
 
-class Reporter:
-    """Owns one turn's status message. Thread-safe: the agent loop, its tool worker threads
-    and the watchdog all write through here.
+def is_progress_line(text: str) -> bool:
+    """True for the progress lines a turn leaves behind in the thread — the placeholder, the
+    "Running X…" narration, the watchdog's ticker. They are the bot thinking out loud, not
+    part of the conversation, so thread history skips them.
 
-    `update(text)` edits the turn's status message. `post(text)` (optional) starts a new
-    message in the thread — used only after the status message has been sealed.
+    Deliberately does NOT match snags or final answers: those are real things the bot told the
+    user, and a follow-up ("why did that fail?") needs them. Nothing that ends a turn may start
+    with WORKING, or it would be filtered out of its own thread's history.
+    """
+    t = (text or "").strip()
+    return not t or t == THINKING_PLACEHOLDER or t.startswith(WORKING)
+
+
+class Reporter:
+    """Owns one turn's commentary. Thread-safe: the agent loop, its tool worker threads and
+    the watchdog all write through here.
+
+    Callbacks: `post(text)` starts a new message in the thread and returns its ts (or None);
+    `update(ts, text)` edits one we already posted.
     """
 
-    def __init__(self, update, logger, post=None, idle_seconds: int = IDLE_SECONDS):
-        self._update = update
+    def __init__(self, post, update, logger, idle_seconds: int = IDLE_SECONDS):
         self._post = post
+        self._update = update
         self._log = logger
         self._idle = idle_seconds
 
@@ -74,10 +102,29 @@ class Reporter:
         self._sealed = False
         self._nudges = 0
 
+        # The message we're still allowed to overwrite, and whether we may. Only scaffolding
+        # is overwritable; a real thought is left alone once it's been said.
+        self._tail_ts = None
+        self._tail_transient = False
+
         self._activity = "getting started"
         self._hint: str | None = None
 
     # ---- lifecycle -------------------------------------------------------------------
+
+    def open(self, text: str = THINKING_PLACEHOLDER) -> "Reporter":
+        """Post the placeholder as overwritable scaffolding, so the turn's first real line
+        replaces it instead of following it. Failure here is not fatal: with no tail to edit,
+        that first line simply becomes a new message and the turn carries on."""
+        with self._lock:
+            self._tail_transient = True
+            try:
+                self._tail_ts = self._post(text)
+                self._last_text = text
+            except Exception:
+                # Rate limit, not_in_channel, a Slack 5xx.
+                self._log.exception("status: could not post the placeholder")
+        return self
 
     def start(self) -> "Reporter":
         if self._thread is None:
@@ -110,10 +157,18 @@ class Reporter:
         self.say(msg)
 
     def say(self, msg: str, activity: str | None = None) -> None:
-        """A progress line the user sees now. Also resets the watchdog's idle clock."""
+        """A new thought, as its own message in the thread. Also resets the idle clock."""
         if activity:
             self.doing(activity)
         self._write(f"{WORKING} {msg}")
+
+    def waiting(self, msg: str, activity: str | None = None) -> None:
+        """Still on the same thought, still waiting — "the sandbox is booting", "giving it 10
+        more seconds". Replaces the previous transient line rather than stacking up a column of
+        near-identical messages, and the next real thought replaces it in turn."""
+        if activity:
+            self.doing(activity)
+        self._write(f"{WORKING} {msg}", transient=True)
 
     def doing(self, activity: str, hint: str | None = None) -> None:
         """Record what we're busy with. Writes nothing — this is what the watchdog narrates
@@ -124,13 +179,16 @@ class Reporter:
             self._hint = hint
 
     def snag(self, msg: str) -> None:
-        """Hit a problem but still trying. The user hears about obstacles as they happen
-        instead of finding out at the end (or never)."""
+        """Hit a problem but still trying. Its own message, so it's still there at the end of
+        the turn — the user hears about obstacles as they happen, and can still see them
+        afterwards next to the result they explain."""
         self._write(f"{SNAG} {msg}")
 
     def finish(self, text: str) -> bool:
-        """Write the final answer and seal the message. After this nothing else can edit it.
-        Returns False if the write itself failed (the caller should post a fresh message)."""
+        """Write the final answer and seal the turn. It replaces a trailing ticker if there is
+        one (so the thread never ends on "still working…") but never a real thought. After this
+        nothing else can write. Returns False if the write itself failed (the caller should
+        post a fresh message)."""
         with self._lock:
             self._stop.set()
             self._sealed = True
@@ -142,7 +200,7 @@ class Reporter:
         self.finish(f"{FAILED} {msg}")
 
     def close(self) -> None:
-        """Stop the watchdog and, if nothing ever sealed this message, seal it with an honest
+        """Stop the watchdog and, if nothing ever sealed this turn, seal it with an honest
         admission. Idempotent — this is what makes an early `return` as safe as a raise."""
         self.stop()
         if not self.sealed:
@@ -151,10 +209,9 @@ class Reporter:
                       "a fault on my side, not something you did. Nothing is still running.")
 
     def note(self, text: str) -> None:
-        """A new message in the thread. For things discovered after the answer was sealed
-        (e.g. a file failed to upload), which would otherwise vanish silently."""
-        if not self._post:
-            return
+        """A new message in the thread, allowed even after the seal. For things discovered
+        after the answer was final (e.g. a file failed to upload), which would otherwise
+        vanish silently."""
         try:
             self._post(text)
         except Exception:
@@ -162,24 +219,35 @@ class Reporter:
 
     # ---- internals -------------------------------------------------------------------
 
-    def _write(self, text: str) -> bool:
+    def _write(self, text: str, transient: bool = False) -> bool:
         with self._lock:
             if self._sealed:
                 return False
-            return self._raw(text)
+            return self._raw(text, transient)
 
-    def _raw(self, text: str) -> bool:
-        """Caller holds the lock. Skips no-op edits (Slack rate limits are per-workspace)."""
+    def _raw(self, text: str, transient: bool = False) -> bool:
+        """Caller holds the lock. Overwrites the tail if it's scaffolding, otherwise starts a
+        new message. Skips an exact repeat (Slack rate limits are per-workspace)."""
         self._last_spoke = time.monotonic()
-        if text == self._last_text:
+        if text == self._last_text and transient == self._tail_transient:
             return True
+        if self._tail_transient and self._tail_ts:
+            try:
+                self._update(self._tail_ts, text)
+                self._last_text, self._tail_transient = text, transient
+                return True
+            except Exception:
+                # Deleted message, or Slack having a moment. The line still has to reach the
+                # user, so fall through and start a new message instead of dropping it.
+                self._log.exception("status: could not edit the current message; posting instead")
+                self._tail_ts = None
         try:
-            self._update(text)
-            self._last_text = text
-            return True
+            ts = self._post(text)
         except Exception:
-            self._log.exception("status: could not update the turn's message")
+            self._log.exception("status: could not post to the thread")
             return False
+        self._tail_ts, self._last_text, self._tail_transient = ts, text, transient
+        return True
 
     def _line(self) -> str:
         with self._lock:
@@ -201,35 +269,29 @@ class Reporter:
                 if time.monotonic() - self._last_spoke < self._idle:
                     continue
                 self._nudges += 1
-                self._raw(self._line())
+                # Transient: the first tick starts the ticker, later ticks just move its clock
+                # on, and the next real thought (or the answer) takes its place.
+                self._raw(self._line(), transient=True)
 
 
 @contextlib.contextmanager
 def turn(channel: str, thread_ts: str, say, client, logger):
-    """One turn = one message = one promise, from the first line to the last.
+    """One turn = one commentary = one promise, from the first line to the last.
 
     The placeholder post lives INSIDE the guard, so there is no window before the Reporter
     exists in which a Slack hiccup can kill the turn and leave the user with nothing at all.
     Every exit — return, raise, even a BaseException — goes through close(), which seals the
-    message. That's the point: the guarantee is positional, not something each new call site
-    has to remember.
+    turn. That's the point: the guarantee is positional, not something each new call site has
+    to remember.
     """
-    msg_ts = {"ts": None}
-    try:
-        posted = say(text=THINKING_PLACEHOLDER, thread_ts=thread_ts)
-        msg_ts["ts"] = (posted or {}).get("ts")
-    except Exception:
-        # Rate limit, not_in_channel, a Slack 5xx. Not fatal: the first status line below
-        # becomes a new message instead, and the turn carries on.
-        logger.exception("status: could not post the placeholder")
+    def post(text):
+        return ((say(text=text, thread_ts=thread_ts) or {}).get("ts"))
 
-    def update(text):
-        if msg_ts["ts"]:
-            client.chat_update(channel=channel, ts=msg_ts["ts"], text=text)
-        else:
-            msg_ts["ts"] = (say(text=text, thread_ts=thread_ts) or {}).get("ts")
+    def update(ts, text):
+        client.chat_update(channel=channel, ts=ts, text=text)
 
-    reporter = Reporter(update, logger, post=lambda t: say(text=t, thread_ts=thread_ts))
+    reporter = Reporter(post, update, logger)
+    reporter.open()
     reporter.start()
     try:
         yield reporter

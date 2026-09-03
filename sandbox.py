@@ -22,6 +22,7 @@ import ast
 import concurrent.futures
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -460,6 +461,44 @@ def _run_lambda(code: str, input_key: str | None, staging, logger, environment: 
                                 artifacts=raw.get("artifacts") or [], error=raw.get("error"), work_dir=out_prefix)
 
 
+# --- the attached file must keep its extension ------------------------------------------
+# The deployed Lambda handler stages every input at /tmp/input_file — no extension — and the
+# libraries the model reaches for first refuse that: openpyxl checks the suffix before it will
+# open a workbook, pandas.read_excel can't pick an engine, and so on. In production this made
+# every spreadsheet request fail six times in a row and then give up; locally it never showed,
+# because the local path keeps the filename. handler.py is fixed too, but that needs a Lambda
+# redeploy — this prelude makes the bot correct against the handler that's live right now, and
+# is a no-op once INPUT_FILE already carries the right suffix.
+_EXT_RE = re.compile(r"^\.[a-z0-9]{1,8}$")
+
+
+def _input_extension_prelude(filename: str) -> str:
+    """One line of Python (so tracebacks shift by exactly one) that, if INPUT_FILE lacks the
+    attachment's extension, copies it to a sibling path that has one and re-points the env var.
+    Runs inside exec() with its own namespace, so nothing leaks into the model's code."""
+    ext = os.path.splitext(filename or "")[1].lower()
+    if not _EXT_RE.match(ext):
+        return ""
+    body = (
+        "import os, shutil\n"
+        "p = os.environ.get('INPUT_FILE')\n"
+        f"if p and not p.lower().endswith({ext!r}):\n"
+        "    d = os.path.join(os.path.dirname(p) or '.', 'input_named')\n"
+        "    shutil.rmtree(d, ignore_errors=True); os.makedirs(d, exist_ok=True)\n"
+        f"    n = os.path.join(d, 'input{ext}'); shutil.copyfile(p, n); os.environ['INPUT_FILE'] = n\n"
+    )
+    return f"exec({body!r}, {{}})  # bot prelude: keep the attachment's extension\n"
+
+
+def _unshift_traceback_lines(text: str | None, lines: int) -> str | None:
+    """Tracebacks from the sandbox point at snippet.py line numbers; take the prelude back out so
+    the model can find the line it actually wrote."""
+    if not text or not lines:
+        return text
+    return re.sub(r'(snippet\.py", line )(\d+)',
+                  lambda m: f"{m.group(1)}{max(1, int(m.group(2)) - lines)}", text)
+
+
 def run_code(tool_input: dict, staging, logger, notify=None) -> ToolInvocationResult:
     """Execute model-written code. Always returns a ToolInvocationResult (never raises).
 
@@ -487,6 +526,7 @@ def run_code(tool_input: dict, staging, logger, notify=None) -> ToolInvocationRe
         )
 
     input_path = None
+    prelude = ""
     handle = tool_input.get("input_file")
     if handle:
         staged = staging.by_handle().get(handle)
@@ -495,13 +535,18 @@ def run_code(tool_input: dict, staging, logger, notify=None) -> ToolInvocationRe
                 f"No attached file with handle {handle!r}. Available: {sorted(staging.by_handle()) or 'none'}."
             )
         input_path = staged.ref
+        prelude = _input_extension_prelude(staged.filename)
 
-    logger.info("run_code: backend=%s environment=%s input=%s code_chars=%d",
-                SANDBOX_BACKEND, environment, bool(input_path), len(code))
+    logger.info("run_code: backend=%s environment=%s input=%s code_chars=%d prelude=%s",
+                SANDBOX_BACKEND, environment, bool(input_path), len(code), bool(prelude))
     try:
         if SANDBOX_BACKEND == "lambda":
-            return _run_lambda(code, input_path, staging, logger, environment, notify)
-        return _run_local(code, input_path, staging, logger, environment)
+            res = _run_lambda(prelude + code, input_path, staging, logger, environment, notify)
+        else:
+            res = _run_local(prelude + code, input_path, staging, logger, environment)
     except Exception as err:
         logger.exception("Sandbox crashed")
         return ToolInvocationResult.err(f"{type(err).__name__}: {err}")
+    if prelude:
+        res.error = _unshift_traceback_lines(res.error, prelude.count("\n"))
+    return res
