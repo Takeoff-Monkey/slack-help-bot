@@ -35,7 +35,7 @@ scratch bucket `help-bot-code-scratchpad`, Heroku app `slack-help-bot`.
 ## Part 1 — Prove it locally (`TOOL_BACKEND=local`)
 
 ```bash
-cd /home/konur/Documents/Takeoff_Monkey/slack_note_updater
+cd /home/konur/Documents/Takeoff_Monkey/slack-help-bot
 
 # 1) Bot venv  ← this is where `pip install` goes
 python3 -m venv .venv
@@ -144,7 +144,7 @@ aws iam create-access-key --user-name tm-help-bot      # copy the AccessKeyId + 
 ## Part 4 — Push to Heroku (production = `lambda` backend)
 
 ```bash
-cd /home/konur/Documents/Takeoff_Monkey/slack_note_updater
+cd /home/konur/Documents/Takeoff_Monkey/slack-help-bot
 
 # Config (the bot reads these as env vars on the dyno)
 heroku config:set -a slack-help-bot \
@@ -180,3 +180,18 @@ heroku logs --tail -a slack-help-bot     # look for: Discovered tool 'schedule-e
 | Heroku app | `slack-help-bot` |
 | New Slack scope | `files:write` (reinstall) |
 | Prod env vars | `TOOL_BACKEND=lambda`, `SCRATCH_S3_BUCKET`, `AWS_*` |
+
+### Cold-start tuning (optional — sane defaults, only set to override)
+
+The tool/sandbox Lambdas are container images, so one that has gone cold needs tens of
+seconds to pull and boot. The bot handles that itself: it pings the sandbox awake at the
+start of an action turn, waits for that boot before invoking for real, and if Lambda answers
+"not ready / throttled" it backs off in escalating steps (5s → 10s → 20s → 30s) instead of
+retrying instantly.
+
+| Var | Default | What it does |
+|---|---|---|
+| `LAMBDA_COLD_START_GRACE_SECONDS` | `90` | Read-timeout headroom on top of each function's own timeout (the boot happens *inside* the invoke). Also caps how long the bot waits on a warm-up ping. |
+| `LAMBDA_COLD_START_MAX_WAIT_SECONDS` | `65` | Total time spent waiting *between* attempts before giving up with "still starting up". |
+| `SANDBOX_PREWARM` | `1` | Set `0` to stop pinging the sandbox awake at the start of an action turn. |
+| `SANDBOX_PREWARM_TTL_SECONDS` | `240` | Don't re-ping a sandbox warmed this recently. |

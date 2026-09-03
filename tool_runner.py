@@ -16,12 +16,115 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 import uuid
 from dataclasses import dataclass, field
 
 import slack_files
 
 TOOL_BACKEND = os.environ.get("TOOL_BACKEND", "local")
+
+# Cold-start headroom. Every tool and the sandbox are *container-image* Lambdas (1–3GB), so a
+# function that has gone cold needs tens of seconds to pull its image and boot. Two knobs:
+#   GRACE     — extra read-timeout on top of the function's own timeout, because that boot
+#               happens INSIDE the invoke: the client must be willing to wait for boot + run.
+#   MAX_WAIT  — total time we'll spend waiting *between* attempts when Lambda answers "not
+#               ready / throttled" instead of running (see invoke_lambda).
+LAMBDA_COLD_START_GRACE = int(os.environ.get("LAMBDA_COLD_START_GRACE_SECONDS", "90"))
+LAMBDA_COLD_START_MAX_WAIT = int(os.environ.get("LAMBDA_COLD_START_MAX_WAIT_SECONDS", "65"))
+
+# Escalating waits between attempts, trimmed to MAX_WAIT. Deliberately starts at 5s, not ~1s:
+# a booting container gains nothing from being asked again immediately.
+_COLD_START_STEPS = (5, 10, 20, 30)
+
+# Lambda error codes that mean "not ready yet, ask again" rather than "this call is wrong".
+# Anything else (bad payload, AccessDenied, ResourceNotFound) fails immediately — no amount
+# of waiting fixes those.
+_NOT_READY_CODES = {
+    "TooManyRequestsException",     # throttled — typical when a cold start bursts concurrency
+    "ResourceNotReadyException",    # function/ENI still initializing after idle
+    "ResourceConflictException",    # function still updating (e.g. just after a deploy)
+    "ServiceException",             # transient Lambda-side 500
+    "ServiceUnavailableException",
+    "EC2ThrottledException",
+    "RequestTimeoutException",
+}
+
+
+class ColdStartTimeout(RuntimeError):
+    """The function was still coming up after we'd waited our whole budget."""
+
+
+def _not_ready(err: Exception) -> bool:
+    from botocore.exceptions import (
+        ClientError,
+        ConnectionClosedError,
+        ConnectTimeoutError,
+        EndpointConnectionError,
+    )
+
+    # These never reached the service (or died before a response), so a retry is safe.
+    # NOTE: ReadTimeoutError is deliberately absent — the function is probably still running,
+    # and re-invoking would double the wait instead of shortening it.
+    if isinstance(err, (ConnectTimeoutError, ConnectionClosedError, EndpointConnectionError)):
+        return True
+    if isinstance(err, ClientError):
+        return err.response.get("Error", {}).get("Code") in _NOT_READY_CODES
+    return False
+
+
+def _cold_start_waits() -> list[int]:
+    waits, spent = [], 0
+    for step in _COLD_START_STEPS:
+        if spent >= LAMBDA_COLD_START_MAX_WAIT:
+            break
+        step = min(step, LAMBDA_COLD_START_MAX_WAIT - spent)
+        waits.append(step)
+        spent += step
+    return waits
+
+
+def invoke_lambda(function_name: str, payload: dict, read_timeout: int, logger,
+                  notify=None, label: str | None = None):
+    """Invoke a Lambda synchronously, waiting *patiently* through a cold start.
+
+    Lambda answers a not-ready/throttled invoke in milliseconds. Handing that straight back
+    to the model made it re-run the tool about a second later — hammering a function that
+    only needed time to boot. So the waiting happens here, in escalating steps, and the model
+    only ever sees the result of an attempt that actually ran.
+
+    `notify(msg)` (optional) surfaces the wait to the user instead of leaving them staring at
+    a silent placeholder. Raises ColdStartTimeout if the budget runs out; every other
+    exception (a real failure) is raised on the first attempt.
+    """
+    client = lambda_client(read_timeout)
+    label = label or function_name
+    last_err = None
+    waited = 0
+    for wait in [0, *_cold_start_waits()]:
+        if wait:
+            waited += wait
+            logger.info("Lambda %s not ready (%s); waiting %ds before retrying (total %ds)",
+                        function_name, last_err, wait, waited)
+            if notify:
+                try:
+                    notify(f"{label} is still booting up — giving it {wait} more seconds…")
+                except Exception:
+                    logger.exception("cold-start notify failed (continuing)")
+            time.sleep(wait)
+        try:
+            return client.invoke(
+                FunctionName=function_name,
+                InvocationType="RequestResponse",
+                Payload=json.dumps(payload).encode("utf-8"),
+            )
+        except Exception as err:
+            if not _not_ready(err):
+                raise
+            last_err = err
+    raise ColdStartTimeout(
+        f"{label} was still starting up after {waited}s of waiting ({last_err})."
+    ) from last_err
 
 
 @dataclass
@@ -77,7 +180,7 @@ def _s3_work_prefix(staging) -> str:
 
 
 class LocalSubprocessBackend:
-    def invoke(self, spec, tool_input, staged, work_dir, logger) -> ToolInvocationResult:
+    def invoke(self, spec, tool_input, staged, work_dir, logger, notify=None) -> ToolInvocationResult:
         venv_python = spec.dir / ".venv" / "bin" / "python"
         if not venv_python.exists():
             return ToolInvocationResult.err(
@@ -108,7 +211,7 @@ class LocalSubprocessBackend:
 
 
 class LambdaBackend:
-    def invoke(self, spec, tool_input, staged, work_dir, logger) -> ToolInvocationResult:
+    def invoke(self, spec, tool_input, staged, work_dir, logger, notify=None) -> ToolInvocationResult:
         fn = (spec.entrypoint.get("lambda") or {}).get("function_name")
         if not fn:
             return ToolInvocationResult.err(f"{spec.name} has no lambda.function_name in its manifest.", work_dir=work_dir)
@@ -120,13 +223,19 @@ class LambdaBackend:
             "backend": "lambda",
         }
         try:
-            # Wait a bit longer than the function's own timeout so we receive its real
-            # result instead of timing out while it finishes (and writes to S3).
-            client = lambda_client(spec.timeout_seconds + 30)
-            resp = client.invoke(
-                FunctionName=fn,
-                InvocationType="RequestResponse",
-                Payload=json.dumps(payload).encode("utf-8"),
+            # Read timeout = the function's own timeout + cold-start grace, so we receive its
+            # real result instead of giving up while it boots or finishes (and writes to S3).
+            resp = invoke_lambda(
+                fn, payload,
+                read_timeout=spec.timeout_seconds + LAMBDA_COLD_START_GRACE,
+                logger=logger, notify=notify, label=spec.name,
+            )
+        except ColdStartTimeout as err:
+            logger.warning("Cold-start budget exhausted for %s: %s", fn, err)
+            return ToolInvocationResult.err(
+                f"{err} Tell the user it needs another moment and let them ask again — "
+                f"do NOT immediately re-run this tool.",
+                work_dir=work_dir,
             )
         except Exception as err:
             logger.exception("Lambda invoke failed for %s", fn)
@@ -202,7 +311,7 @@ def get_backend():
     return LambdaBackend() if TOOL_BACKEND == "lambda" else LocalSubprocessBackend()
 
 
-def run_tool(spec, tool_input: dict, staging: "slack_files.Staging", logger) -> ToolInvocationResult:
+def run_tool(spec, tool_input: dict, staging: "slack_files.Staging", logger, notify=None) -> ToolInvocationResult:
     """Validate, pick a work dir, and dispatch to the active backend. Always returns a
     ToolInvocationResult (never raises)."""
     by_handle = staging.by_handle()
@@ -211,7 +320,7 @@ def run_tool(spec, tool_input: dict, staging: "slack_files.Staging", logger) -> 
         return ToolInvocationResult.err(err)
     work_dir = _s3_work_prefix(staging) if staging.backend == "lambda" else _local_work_dir(staging)
     try:
-        return get_backend().invoke(spec, tool_input, staged, work_dir, logger)
+        return get_backend().invoke(spec, tool_input, staged, work_dir, logger, notify)
     except Exception as err:
         logger.exception("Backend crashed running %s", spec.name)
         return ToolInvocationResult.err(f"{type(err).__name__}: {err}", work_dir=work_dir)

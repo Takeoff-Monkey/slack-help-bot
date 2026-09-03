@@ -30,6 +30,12 @@ INPUT_PATH = "/tmp/input_file"
 
 
 def handler(event, context):
+    # Warm-up ping from the bot (sandbox.prewarm): the container booting IS the work, so
+    # return straight away. Older deployments without this branch stop just as early on the
+    # empty `code` below, so a ping warms them too.
+    if event.get("warmup"):
+        return {"status": "ok", "summary": "warm", "artifacts": [], "error": None}
+
     out_prefix = (event.get("work_dir") or "output").rstrip("/")
     bucket = event.get("bucket") or os.environ.get("SCRATCH_S3_BUCKET")
     try:

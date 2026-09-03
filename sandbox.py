@@ -18,9 +18,12 @@ run_code as trusted-internal-but-observable. The Lambda is the real isolation bo
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import os
 import subprocess
+import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -32,6 +35,13 @@ MAX_CODE_CHARS = 60_000
 MAX_OUTPUT_CHARS = 8_000
 SANDBOX_TIMEOUT = int(os.environ.get("SANDBOX_TIMEOUT_SECONDS", "120"))
 SANDBOX_BACKEND = os.environ.get("TOOL_BACKEND", "local")  # follows the tool backend
+
+# Boot the sandbox ahead of time (see prewarm). On by default: a warm ping costs a few
+# milliseconds of Lambda time and buys back the whole cold start.
+SANDBOX_PREWARM = os.environ.get("SANDBOX_PREWARM", "1").lower() not in ("0", "false", "no")
+# Don't re-ping a function we already warmed this recently — Lambda keeps an idle execution
+# environment around far longer than this.
+PREWARM_TTL_SECONDS = int(os.environ.get("SANDBOX_PREWARM_TTL_SECONDS", "240"))
 
 
 def run_code_tool_def() -> dict:
@@ -186,18 +196,100 @@ def _lambda_function_name(environment: str) -> str:
     return os.environ.get("SANDBOX_LAMBDA_NAME", "tm-sandbox-runcode")
 
 
-def _run_lambda(code: str, input_key: str | None, staging, logger, environment: str = "default") -> ToolInvocationResult:
+# One background worker whose only job is holding a warm-up invoke open while it boots.
+_PREWARM_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="prewarm")
+_prewarm_lock = threading.Lock()
+_prewarm: dict[str, tuple[float, concurrent.futures.Future]] = {}   # env -> (started_at, future)
+
+
+def _ping(fn: str, logger) -> None:
+    """A do-nothing invoke whose only purpose is to make Lambda boot the container."""
+    # `warmup` is understood by the current handler; older deployed handlers stop just as
+    # early on the empty `code`, so this is a fast no-op either way.
+    client = tool_runner.lambda_client(tool_runner.LAMBDA_COLD_START_GRACE + 30)
+    started = time.monotonic()
+    client.invoke(FunctionName=fn, InvocationType="RequestResponse",
+                  Payload=json.dumps({"warmup": True, "code": ""}).encode("utf-8"))
+    logger.info("sandbox prewarm: %s ready after %.1fs", fn, time.monotonic() - started)
+
+
+def prewarm(logger, environment: str = "default") -> None:
+    """Start booting the sandbox now, in the background, so it's up by the time it's needed.
+
+    A cold container-image sandbox takes tens of seconds to pull and boot. That used to land
+    entirely on the user: the model wrote code, called run_code, and everyone waited (or the
+    invoke came back not-ready and the model impatiently re-ran it). Firing the boot at the
+    *start* of an action turn overlaps it with the model's own thinking time, and _run_lambda
+    waits for this ping before invoking for real — so the real run lands on a warm, idle
+    environment instead of racing the boot and starting a second cold one.
+
+    Fire-and-forget and best-effort: any failure here is ignored, the real invoke still runs.
+    """
+    if not SANDBOX_PREWARM or SANDBOX_BACKEND != "lambda":
+        return
+    fn = _lambda_function_name(environment)
+    with _prewarm_lock:
+        started_at, _ = _prewarm.get(environment, (0.0, None))
+        if time.monotonic() - started_at < PREWARM_TTL_SECONDS:
+            return          # already warm (or warming) — don't pay for a second ping
+        logger.info("sandbox prewarm: pinging %s", fn)
+        future = _PREWARM_POOL.submit(_ping, fn, logger)
+        _prewarm[environment] = (time.monotonic(), future)
+
+
+def _await_prewarm(environment: str, logger, notify=None) -> None:
+    """Block until an in-flight warm-up finishes, so we don't invoke into a booting function
+    (Lambda would spin up a SECOND cold environment rather than queue behind the first)."""
+    with _prewarm_lock:
+        entry = _prewarm.get(environment)
+    if not entry:
+        return
+    started_at, future = entry
+    if future.done():
+        return
+    budget = max(0, tool_runner.LAMBDA_COLD_START_GRACE - int(time.monotonic() - started_at))
+    if not budget:
+        return
+    logger.info("sandbox: waiting up to %ds for the %s environment to finish booting",
+                budget, environment)
+    if notify:
+        try:
+            notify("The code sandbox is booting up — waiting for it before I run anything…")
+        except Exception:
+            logger.exception("prewarm notify failed (continuing)")
+    try:
+        future.result(timeout=budget)
+    except Exception:
+        logger.info("sandbox prewarm didn't complete; invoking anyway", exc_info=True)
+
+
+def _run_lambda(code: str, input_key: str | None, staging, logger, environment: str = "default",
+                notify=None) -> ToolInvocationResult:
     fn = _lambda_function_name(environment)
     out_prefix = f"{staging.root}/sandbox-{uuid.uuid4().hex[:8]}/output"
     payload = {"code": code, "input_path": input_key, "work_dir": out_prefix,
                "bucket": staging.bucket, "backend": "lambda"}
+    # If a warm-up ping is still booting this environment, wait for it rather than invoking
+    # into the boot (which would start a second cold environment and wait twice).
+    _await_prewarm(environment, logger, notify)
     try:
-        # read_timeout must exceed the sandbox function's own timeout (130s) so we wait for
-        # its real result; retries OFF so a hanging run isn't re-invoked into a multi-minute
-        # stall (the bug that previously blocked the whole turn). See tool_runner.lambda_client.
-        client = tool_runner.lambda_client(SANDBOX_TIMEOUT + 40)
-        resp = client.invoke(FunctionName=fn, InvocationType="RequestResponse",
-                             Payload=json.dumps(payload).encode("utf-8"))
+        # read_timeout must exceed the sandbox function's own timeout (130s) PLUS a cold boot,
+        # which happens inside the invoke; retries OFF so a hanging run isn't re-invoked into a
+        # multi-minute stall (the bug that previously blocked the whole turn). invoke_lambda
+        # adds its own patient waits for not-ready/throttled responses.
+        resp = tool_runner.invoke_lambda(
+            fn, payload,
+            read_timeout=SANDBOX_TIMEOUT + tool_runner.LAMBDA_COLD_START_GRACE,
+            logger=logger, notify=notify, label="The code sandbox",
+        )
+    except tool_runner.ColdStartTimeout as err:
+        logger.warning("Sandbox cold-start budget exhausted: %s", err)
+        return ToolInvocationResult.err(
+            f"{err} This is a startup delay, not a problem with the code — tell the user the "
+            f"sandbox is still warming up and to ask again in a moment. Do NOT immediately "
+            f"re-run run_code.",
+            work_dir=out_prefix,
+        )
     except Exception as err:
         logger.exception("Sandbox Lambda invoke failed")
         return ToolInvocationResult.err(f"Sandbox invoke failed: {err}", work_dir=out_prefix)
@@ -212,8 +304,10 @@ def _run_lambda(code: str, input_key: str | None, staging, logger, environment: 
                                 artifacts=raw.get("artifacts") or [], error=raw.get("error"), work_dir=out_prefix)
 
 
-def run_code(tool_input: dict, staging, logger) -> ToolInvocationResult:
-    """Execute model-written code. Always returns a ToolInvocationResult (never raises)."""
+def run_code(tool_input: dict, staging, logger, notify=None) -> ToolInvocationResult:
+    """Execute model-written code. Always returns a ToolInvocationResult (never raises).
+
+    `notify(msg)` (optional) lets the caller surface waiting-on-boot status to the user."""
     code = tool_input.get("code") or ""
     if not code.strip():
         return ToolInvocationResult.err("No code provided.")
@@ -239,7 +333,7 @@ def run_code(tool_input: dict, staging, logger) -> ToolInvocationResult:
                 SANDBOX_BACKEND, environment, bool(input_path), len(code))
     try:
         if SANDBOX_BACKEND == "lambda":
-            return _run_lambda(code, input_path, staging, logger, environment)
+            return _run_lambda(code, input_path, staging, logger, environment, notify)
         return _run_local(code, input_path, staging, logger, environment)
     except Exception as err:
         logger.exception("Sandbox crashed")

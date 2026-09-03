@@ -65,6 +65,7 @@ Files & output:
 
 Errors:
 - If a tool returns an error, you may retry ONCE with corrected inputs, or explain the problem plainly. Do not keep retrying or switch to `run_code` to brute-force around a failure.
+- Startup delays are NOT errors to retry around. The sandbox and the tools run on infrastructure that can take up to a minute to boot when it has gone cold, and the bot already waits for it patiently before every call. If a result says something is still booting or starting up, do NOT immediately call it again — that only makes it slower. Tell the user it needs another moment and stop.
 
 Formatting — your output is rendered in Slack mrkdwn (NOT standard Markdown). Use only:
 - Inline code/identifiers: backticks, like `file_1`
@@ -134,6 +135,11 @@ def run_agent(client, question, history, staging, tool_specs, progress, on_artif
     """
     cancel_event = cancel_event or _NeverCancel()
     tool_defs = tool_registry.anthropic_tool_defs(tool_specs) + [sandbox.run_code_tool_def()]
+
+    # Start booting the sandbox now (no-op unless it's the Lambda backend and it's gone cold).
+    # It takes tens of seconds to come up, and the model spends at least one turn writing code
+    # before it calls run_code — so overlap the two instead of making the user wait for both.
+    sandbox.prewarm(logger)
 
     attach_note = slack_files.attachments_for_prompt(staging)
     user_turn = f"{question}\n\n{attach_note}" if attach_note else question
@@ -213,9 +219,10 @@ def run_agent(client, question, history, staging, tool_specs, progress, on_artif
 
             def _do(block=block, name=name):
                 if name == "run_code":
-                    return sandbox.run_code(block.input, staging, logger)
+                    return sandbox.run_code(block.input, staging, logger, notify=progress)
                 if name in tool_specs:
-                    return tool_runner.run_tool(tool_specs[name], block.input, staging, logger)
+                    return tool_runner.run_tool(tool_specs[name], block.input, staging, logger,
+                                                notify=progress)
                 return tool_runner.ToolInvocationResult.err(f"Unknown tool {name!r}.")
 
             # Run in a worker thread so a cancel mid-tool abandons it instead of blocking.
