@@ -315,11 +315,23 @@ def run_tool(spec, tool_input: dict, staging: "slack_files.Staging", logger, not
     """Validate, pick a work dir, and dispatch to the active backend. Always returns a
     ToolInvocationResult (never raises)."""
     by_handle = staging.by_handle()
+    # A tool that declares confirm:true does something the user would want a say in. Enforced
+    # here rather than left to the system prompt, so a future tool with real blast radius is
+    # gated by the framework and not by the model remembering to be careful.
+    if spec.confirm and not tool_input.get("user_confirmed"):
+        return ToolInvocationResult.err(
+            f"{spec.name} makes a change the user needs to approve first. Use the `ask_user` "
+            f"tool to say exactly what you're about to do, and only call {spec.name} again with "
+            f"user_confirmed=true once they've said yes."
+        )
     staged, err = _resolve_input(spec, tool_input, by_handle)
     if err:
         return ToolInvocationResult.err(err)
-    work_dir = _s3_work_prefix(staging) if staging.backend == "lambda" else _local_work_dir(staging)
+    # Inside the try: _local_work_dir does an os.makedirs, which can fail (full disk, read-only
+    # /tmp) — and this function promises the agent loop a result, never an exception.
+    work_dir = None
     try:
+        work_dir = _s3_work_prefix(staging) if staging.backend == "lambda" else _local_work_dir(staging)
         return get_backend().invoke(spec, tool_input, staged, work_dir, logger, notify)
     except Exception as err:
         logger.exception("Backend crashed running %s", spec.name)

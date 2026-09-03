@@ -49,6 +49,10 @@
         }
       }
     },
-    "timeout_seconds": { "type": "integer", "minimum": 1 }
+    "timeout_seconds": { "type": "integer", "minimum": 1 },
+    "confirm": {
+      "type": "boolean",
+      "description": "Set true if running this tool makes a change the user would want a say in (deletes, overwrites, posts somewhere, spends money). The bot then refuses to run it until the model has asked via ask_user and passes user_confirmed=true. Defaults to false — the read-only analysis tools don't need it."
+    }
   }
 }

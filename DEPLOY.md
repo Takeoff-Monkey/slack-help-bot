@@ -195,3 +195,17 @@ retrying instantly.
 | `LAMBDA_COLD_START_MAX_WAIT_SECONDS` | `65` | Total time spent waiting *between* attempts before giving up with "still starting up". |
 | `SANDBOX_PREWARM` | `1` | Set `0` to stop pinging the sandbox awake at the start of an action turn. |
 | `SANDBOX_PREWARM_TTL_SECONDS` | `240` | Don't re-ping a sandbox warmed this recently. |
+
+### Staying-in-touch tuning (optional)
+
+The bot narrates itself: one status message per turn, a watchdog that speaks up when it has
+been quiet, and a guarantee that the message never stays on "Thinking…".
+
+| Var | Default | What it does |
+|---|---|---|
+| `STATUS_IDLE_SECONDS` | `30` | How long the bot may go quiet before it posts where it's at. |
+| `STATUS_LONG_RUN_SECONDS` | `180` | Past this, the update admits it's taking unusually long and offers _stop_. |
+| `ANTHROPIC_TIMEOUT_SECONDS` | `120` | Per-request cap on model calls (the SDK default is 600s, which meant up to half an hour of frozen hourglass). |
+| `ANTHROPIC_MAX_RETRIES` | `2` | SDK-level retries for those calls. |
+| `ACTION_MODEL_TIMEOUT_SECONDS` | `120` | Same cap, applied per request inside the tool-use loop. |
+| `BOLT_LISTENER_THREADS` | `16` | Concurrent Slack turns. Bolt's default of 5 meant the 6th simultaneous request got no reply at all. |

@@ -19,6 +19,8 @@ import json
 import os
 from dataclasses import dataclass, field
 
+import anthropic
+
 import sandbox
 import slack_files
 import tool_registry
@@ -27,6 +29,10 @@ import tool_runner
 ACTION_MODEL = os.environ.get("ACTION_MODEL", "claude-sonnet-5")
 MAX_TOOL_ITERATIONS = int(os.environ.get("MAX_TOOL_ITERATIONS", "6"))
 MAX_TOKENS = 2048
+# Per-request cap on a model call. The SDK's default read timeout is 600s, so a wedged
+# request used to mean ten minutes of an unchanging "Thinking…" placeholder (times the
+# SDK's own retries). Fail fast enough that we can tell the user something instead.
+MODEL_TIMEOUT = float(os.environ.get("ACTION_MODEL_TIMEOUT_SECONDS", "120"))
 
 # Tools run in a worker thread so the loop can keep polling the cancel signal and abandon a
 # long-running tool the moment the user says "stop" (the Lambda finishes in the background;
@@ -39,6 +45,41 @@ class _NeverCancel:
     @staticmethod
     def is_set() -> bool:
         return False
+
+
+# The bot's way of stopping to ask instead of guessing. Calling it ends the turn: the question
+# becomes the reply, and the teammate's answer arrives as the next message in the thread (which
+# is already how history works, so no extra state to keep).
+ASK_USER_TOOL = {
+    "name": "ask_user",
+    "description": (
+        "Ask the teammate a question and STOP, handing the turn back to them. Use this when a "
+        "decision is genuinely theirs to make:\n"
+        "- before anything irreversible or destructive: deleting or overwriting a file, "
+        "replacing their original, running shell commands, or any change that can't be undone\n"
+        "- when the request is ambiguous and guessing wrong would waste their time — which "
+        "file, which sheet, which pages, what output format\n"
+        "- when the work would go well beyond what they actually asked for\n"
+        "- when you've hit a wall and only they can unblock it\n"
+        "Ask ONE clear question and stop. Do NOT use this to narrate progress, and do not ask "
+        "permission for the ordinary work they already asked you to do — just do that."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "question": {
+                "type": "string",
+                "description": "The question, in one or two plain sentences.",
+            },
+            "why": {
+                "type": "string",
+                "description": "Optional: one short sentence on why you stopped to ask.",
+            },
+        },
+        "required": ["question"],
+        "additionalProperties": False,
+    },
+}
 
 # The Slack-mrkdwn rules are copied from app2.ANSWER_SYSTEM so action replies render the
 # same way as Q&A replies.
@@ -67,6 +108,18 @@ Errors:
 - If a tool returns an error, you may retry ONCE with corrected inputs, or explain the problem plainly. Do not keep retrying or switch to `run_code` to brute-force around a failure.
 - Startup delays are NOT errors to retry around. The sandbox and the tools run on infrastructure that can take up to a minute to boot when it has gone cold, and the bot already waits for it patiently before every call. If a result says something is still booting or starting up, do NOT immediately call it again — that only makes it slower. Tell the user it needs another moment and stop.
 
+Never go quiet — this matters as much as getting the work right:
+- ALWAYS end your turn with words. Never stop after a tool result without writing a reply; an empty answer leaves the user staring at a spinner with no idea whether you're still working.
+- The moment something goes wrong, say so in that same turn: one short sentence naming what failed and what you're doing about it. Don't discover an obstacle and quietly move on.
+- If you genuinely cannot do what was asked, say plainly what stopped you and what would unblock it (a different file, a tool that doesn't exist, information only they have). "I can't do this because X" is a good answer. Silence is not.
+- Never say something is done when it isn't, and never describe a file as delivered unless a tool actually produced it.
+
+Ask before you act — use the `ask_user` tool:
+- STOP and ask before anything irreversible or destructive: deleting or overwriting a file, replacing the user's original, running shell commands, or any change that can't be taken back.
+- STOP and ask when the request is genuinely ambiguous and guessing wrong would waste their time — which of several attached files, which sheet, what output format.
+- STOP and ask before doing substantially more than they asked for.
+- Do NOT ask permission for the ordinary work they already requested — that's just delay. Ask when the answer is theirs to give, not when you're merely unsure of yourself.
+
 Formatting — your output is rendered in Slack mrkdwn (NOT standard Markdown). Use only:
 - Inline code/identifiers: backticks, like `file_1`
 - Bold: single asterisks, like *important* (NOT **double asterisks**)
@@ -83,6 +136,8 @@ class AgentResult:
     work_dirs: list = field(default_factory=list)  # for cleanup (paths/prefixes), never shown
     trace: list = field(default_factory=list)       # human-readable step-by-step log
     cancelled: bool = False                          # user stopped it mid-task
+    failed: bool = False                             # ended on an error we had to surface
+    awaiting_user: bool = False                      # stopped to ask a question (ask_user)
 
 
 def _run_interruptible(fn, cancel_event):
@@ -121,20 +176,64 @@ def _short(s, n: int = 300) -> str:
     return s if len(s) <= n else s[:n] + "…"
 
 
-def run_agent(client, question, history, staging, tool_specs, progress, on_artifacts, cancel_event, logger) -> AgentResult:
+def _model_failure_text(err: Exception, artifacts: list) -> str:
+    """An honest, plain reply when the model call itself falls over. Previously this bubbled
+    out of the loop and lost the trace and any files already produced."""
+    if isinstance(err, anthropic.RateLimitError):
+        what = "I'm being rate-limited by the model API"
+    elif isinstance(err, anthropic.APITimeoutError):
+        what = "the model API stopped responding"
+    elif isinstance(err, anthropic.APIError):
+        what = f"the model API errored ({getattr(err, 'message', None) or err})"
+    else:
+        what = f"something broke while I was working ({type(err).__name__}: {err})"
+    done = " The file(s) I'd already finished are attached above." if artifacts else ""
+    return (f":x: I've stopped — {what}. Nothing is still running in the background."
+            f"{done} Ask me again and I'll pick it back up.")
+
+
+def _wrap_up_text(say: str, stop_reason, artifacts: list, last_error: str | None) -> str:
+    """What to tell the user when the model stops calling tools.
+
+    This used to be `say or "Done."` — so a run that ended right after a failed tool, with the
+    model saying nothing, reported *success*. Never claim an outcome we can't back up."""
+    if say:
+        if stop_reason == "max_tokens":
+            return say + "\n\n_(I ran out of room mid-answer — say 'continue' if that got cut off.)_"
+        return say
+    if last_error:
+        done = " The file(s) I did finish are attached above." if artifacts else ""
+        return (f":warning: I couldn't finish this one. The last thing I tried failed: "
+                f"{_short(last_error, 400)}{done}\n\nTell me how you'd like me to proceed "
+                f"and I'll take another run at it.")
+    if artifacts:
+        return "Done — the file(s) I produced are attached above."
+    return (":warning: I stopped without producing anything, and without an error to explain "
+            "why — that's a fault on my side, not something you did. Ask me again, or rephrase "
+            "what you need, and I'll take another run at it.")
+
+
+def run_agent(client, question, history, staging, tool_specs, reporter, on_artifacts, cancel_event, logger) -> AgentResult:
     """Drive the tool-use loop.
 
-    - progress(msg): updates the Slack 'Thinking…' placeholder with a status line.
+    - reporter: the turn's voice (status.Reporter). `.say()` for a line the user should see
+      now, `.doing()` for what the 30-second watchdog narrates when the bot goes quiet,
+      `.snag()` the moment something goes wrong.
     - on_artifacts(list): uploads files the moment a tool produces them (output survives a
       later failure or the step cap).
     - cancel_event: a threading.Event-like; if it trips, the loop stops ASAP — including
       abandoning a tool mid-run — and returns a cancelled AgentResult.
 
+    The loop's contract with the user: it ALWAYS returns an AgentResult carrying text worth
+    reading. Every exit — success, model error, tool wall, cancel, step cap, a question back
+    to the user — comes out of here as words, never as an exception the caller has to guess at.
+
     Every step is logged at INFO and appended to a human-readable `trace` (returned on the
     AgentResult) so the run isn't a black box.
     """
     cancel_event = cancel_event or _NeverCancel()
-    tool_defs = tool_registry.anthropic_tool_defs(tool_specs) + [sandbox.run_code_tool_def()]
+    tool_defs = (tool_registry.anthropic_tool_defs(tool_specs)
+                 + [sandbox.run_code_tool_def(), ASK_USER_TOOL])
 
     # Start booting the sandbox now (no-op unless it's the Lambda backend and it's gone cold).
     # It takes tens of seconds to come up, and the model spends at least one turn writing code
@@ -147,6 +246,9 @@ def run_agent(client, question, history, staging, tool_specs, progress, on_artif
 
     artifacts: list = []
     work_dirs: list = []
+    last_error: str | None = None       # so a silent wrap-up can still explain what went wrong
+    used_a_tool = False                 # did anything actually happen this turn?
+    nudged = False                      # we only ever poke the model once (see below)
     trace: list = [f"USER: {question!r} | files={[f.handle for f in staging.files]}"]
 
     def emit(arts):
@@ -175,20 +277,32 @@ def run_agent(client, question, history, staging, tool_specs, progress, on_artif
         if cancel_event.is_set():
             return cancelled_result()
 
-        msg = client.messages.create(
-            model=ACTION_MODEL,
-            max_tokens=MAX_TOKENS,
-            thinking={"type": "disabled"},
-            system=ACTION_SYSTEM,
-            tools=tool_defs,
-            messages=messages,
-        )
+        reporter.doing("reading your request" if step == 0 else "working out what to do next")
+        try:
+            msg = client.messages.create(
+                model=ACTION_MODEL,
+                max_tokens=MAX_TOKENS,
+                thinking={"type": "disabled"},
+                system=ACTION_SYSTEM,
+                tools=tool_defs,
+                messages=messages,
+                timeout=MODEL_TIMEOUT,
+            )
+        except Exception as err:
+            # Don't let this escape as a bare exception: the user would get a generic
+            # "something went wrong" and we'd lose the trace and any files already made.
+            logger.exception("agent: model call failed on step %d", step + 1)
+            trace.append(f"MODEL ERROR[{step + 1}]: {type(err).__name__}: {err}")
+            return AgentResult(text=_model_failure_text(err, artifacts), artifacts=artifacts,
+                               work_dirs=work_dirs, trace=trace, failed=True)
         if cancel_event.is_set():
             return cancelled_result()
 
         # The assistant turn (text + tool_use blocks) must be appended verbatim before the
-        # matching tool_result turn.
-        messages.append({"role": "assistant", "content": msg.content})
+        # matching tool_result turn. An empty turn can't go back into history at all — the API
+        # rejects empty content — and there'd be nothing to answer anyway.
+        if msg.content:
+            messages.append({"role": "assistant", "content": msg.content})
 
         say = _text_of(msg)
         tool_calls = [b for b in msg.content if getattr(b, "type", None) == "tool_use"]
@@ -199,34 +313,84 @@ def run_agent(client, question, history, staging, tool_specs, progress, on_artif
             trace.append(f"ASSISTANT[{step + 1}]: {say}")
 
         if msg.stop_reason != "tool_use":
-            trace.append(f"DONE: {say}")
-            logger.info("agent: done after %d step(s)", step + 1)
-            return AgentResult(text=say or "Done.", artifacts=artifacts, work_dirs=work_dirs, trace=trace)
+            # The "silently drops off" case: a file is sitting there, the model says "on it —
+            # running the extractor now", and then just… stops. Its promise would become the
+            # final answer and the user would wait forever for work that never started. Poke
+            # it exactly once to either do the thing or say what's in the way.
+            # `not tool_calls` matters: a max_tokens/refusal turn can carry a half-written
+            # tool_use block. Appending a plain user message after that would leave a tool_use
+            # with no matching tool_result, which the API rejects outright.
+            if (msg.content and not tool_calls and not nudged and not used_a_tool
+                    and staging is not None and staging.files
+                    and step + 1 < MAX_TOOL_ITERATIONS):
+                nudged = True
+                trace.append(f"NUDGE[{step + 1}]: stopped without calling a tool")
+                logger.info("agent: model stopped without acting on %d file(s); nudging once",
+                            len(staging.files))
+                messages.append({"role": "user", "content": (
+                    "You stopped without calling any tool, so nothing has actually happened yet "
+                    "and the user is still waiting. Either do the work now with the right tool, "
+                    "or tell them plainly what is stopping you and what you need from them. Do "
+                    "not answer with a description of what you are about to do."
+                )})
+                continue
+
+            text = _wrap_up_text(say, msg.stop_reason, artifacts, last_error)
+            trace.append(f"DONE: {text}")
+            logger.info("agent: done after %d step(s) | stop=%s | said=%s",
+                        step + 1, msg.stop_reason, bool(say))
+            return AgentResult(text=text, artifacts=artifacts, work_dirs=work_dirs, trace=trace,
+                               failed=not say and bool(last_error))
 
         # Surface the model's friendly preamble ("running the Schedule Extractor now…") so the
         # user can see what's happening and stop it if it's wrong.
         if say:
-            progress(say)
+            reporter.say(say)
 
         tool_results = []
         for block in tool_calls:
             if cancel_event.is_set():
                 return cancelled_result()
             name = block.name
+
+            # The model wants a decision from the user. Hand the turn back with its question —
+            # the answer arrives as the next message in the thread, which is already how
+            # history works, so there's no pending state to keep anywhere.
+            if name == "ask_user":
+                asked = (block.input or {}).get("question") or "Could you tell me a bit more about what you'd like?"
+                why = (block.input or {}).get("why")
+                text = f":raising_hand: {asked}" + (f"\n\n_{why}_" if why else "")
+                trace.append(f"ASK_USER[{step + 1}]: {asked}")
+                logger.info("agent: stopping to ask the user | %r", _short(asked, 160))
+                return AgentResult(text=text, artifacts=artifacts, work_dirs=work_dirs,
+                                   trace=trace, awaiting_user=True)
+
             if not say:
-                progress(f"Running {name}…")
+                reporter.say(f"Running {name}…")
+            reporter.doing(f"running `{name}`",
+                           "Big files can take a couple of minutes." if staging.files else None)
             trace.append(f"CALL[{step + 1}] {name}({_short(json.dumps(block.input), 300)})")
+            used_a_tool = True
 
             def _do(block=block, name=name):
                 if name == "run_code":
-                    return sandbox.run_code(block.input, staging, logger, notify=progress)
+                    return sandbox.run_code(block.input, staging, logger, notify=reporter.say)
                 if name in tool_specs:
                     return tool_runner.run_tool(tool_specs[name], block.input, staging, logger,
-                                                notify=progress)
-                return tool_runner.ToolInvocationResult.err(f"Unknown tool {name!r}.")
+                                                notify=reporter.say)
+                return tool_runner.ToolInvocationResult.err(
+                    f"Unknown tool {name!r}. Available: {sorted(tool_specs) + ['run_code', 'ask_user']}."
+                )
 
             # Run in a worker thread so a cancel mid-tool abandons it instead of blocking.
-            res, was_cancelled = _run_interruptible(_do, cancel_event)
+            # run_tool/run_code promise not to raise, but a crash here must still become a
+            # readable tool_result rather than killing the whole turn.
+            try:
+                res, was_cancelled = _run_interruptible(_do, cancel_event)
+            except Exception as err:
+                logger.exception("agent: tool %s crashed outright", name)
+                res, was_cancelled = tool_runner.ToolInvocationResult.err(
+                    f"{name} crashed: {type(err).__name__}: {err}"), False
             if was_cancelled:
                 return cancelled_result()
 
@@ -235,6 +399,12 @@ def run_agent(client, question, history, staging, tool_specs, progress, on_artif
                         [a.get("filename") for a in res.artifacts])
             trace.append(f"RESULT {name}: status={res.status} | {res.summary or res.error} "
                          f"| artifacts={[a.get('filename') for a in res.artifacts]}")
+            # Tell the user about the obstacle NOW, rather than letting it surface only if the
+            # model happens to mention it (or vanish entirely if the model just stops).
+            if res.status == "error":
+                last_error = res.error or "unknown error"
+                reporter.snag(f"`{name}` hit a problem: {_short(last_error, 180)}")
+                reporter.doing("working out how to get around that")
             emit(res.artifacts)   # upload now — survives any later failure/timeout
             if res.work_dir:
                 work_dirs.append(res.work_dir)
@@ -249,20 +419,29 @@ def run_agent(client, question, history, staging, tool_specs, progress, on_artif
     # Hit the iteration cap — one no-tools wrap-up turn for a coherent reply.
     if cancel_event.is_set():
         return cancelled_result()
-    progress("Wrapping up…")
+    reporter.say("Wrapping up…")
+    reporter.doing("writing up what I managed to do")
     logger.info("agent: hit step cap (%d); forcing finalize", MAX_TOOL_ITERATIONS)
-    delivered = " The files I completed are already attached." if artifacts else ""
+    delivered = " The files I completed are attached above." if artifacts else ""
+    snag = f" The last thing that went wrong: {_short(last_error, 200)}." if last_error else ""
     try:
+        # `tools` MUST stay: the history contains tool_use/tool_result blocks and the API
+        # rejects the call without their definitions — which is why this used to fail every
+        # single time and the user only ever saw the generic fallback below. tool_choice
+        # "none" is what actually keeps it from calling anything.
         final = client.messages.create(
             model=ACTION_MODEL,
             max_tokens=MAX_TOKENS,
             thinking={"type": "disabled"},
-            system=ACTION_SYSTEM + "\n\nYou have reached the step limit. Briefly summarize what you completed and stop calling tools.",
+            system=ACTION_SYSTEM + "\n\nYou have reached the step limit. Tell the user plainly what you completed, what you did not, and what is standing in the way. Do not call any more tools.",
             messages=messages,
+            tools=tool_defs,
+            tool_choice={"type": "none"},
+            timeout=MODEL_TIMEOUT,
         )
-        text = _text_of(final) or f"I hit my step limit before fully finishing.{delivered}"
+        text = _text_of(final) or f":warning: I hit my step limit before finishing.{delivered}{snag}"
     except Exception:
         logger.exception("force-finalize call failed")
-        text = f"I hit my step limit before fully finishing.{delivered}"
+        text = f":warning: I hit my step limit before finishing.{delivered}{snag}"
     trace.append(f"FINALIZE: {text}")
     return AgentResult(text=text, artifacts=artifacts, work_dirs=work_dirs, trace=trace)

@@ -18,6 +18,7 @@ Triggers:
   - any message in a DM with the bot
 """
 
+import concurrent.futures
 import json
 import logging
 import os
@@ -38,6 +39,7 @@ import canvas_knowledge
 # code fallback on user-attached files, in addition to answering questions.
 import agent_loop
 import slack_files
+import status
 import tasks
 import tool_registry
 
@@ -94,8 +96,28 @@ MAX_SLACK_MESSAGE_CHARS = 3800
 SKILLS_DIR = Path(__file__).parent / "docs" / "skills"
 MANIFEST_PATH = SKILLS_DIR / "_manifest.json"
 
-anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-app = App(token=SLACK_BOT_TOKEN)
+# The SDK defaults to a 600s read timeout with 2 retries — worst case, half an hour of a
+# frozen "Thinking…" message while the user assumes work is happening. Cap it so a wedged
+# request becomes an error the bot can actually tell them about.
+ANTHROPIC_TIMEOUT = float(os.environ.get("ANTHROPIC_TIMEOUT_SECONDS", "120"))
+anthropic_client = anthropic.Anthropic(
+    api_key=ANTHROPIC_API_KEY,
+    timeout=ANTHROPIC_TIMEOUT,
+    max_retries=int(os.environ.get("ANTHROPIC_MAX_RETRIES", "2")),
+)
+
+# Bolt runs every listener on a 5-thread pool by default. A turn can hold its thread for
+# minutes (a tool Lambda, a cold sandbox), so the 6th concurrent message would sit in a queue
+# showing the user *nothing at all* — not even the placeholder — and a "stop" would queue
+# behind the very task it was meant to cancel. These threads are almost always blocked on
+# network I/O, so a bigger pool costs little.
+app = App(
+    token=SLACK_BOT_TOKEN,
+    listener_executor=concurrent.futures.ThreadPoolExecutor(
+        max_workers=int(os.environ.get("BOLT_LISTENER_THREADS", "16")),
+        thread_name_prefix="bolt",
+    ),
+)
 
 # Fetch the bot's own user ID at startup so we can identify our own messages
 # when pulling conversation history.
@@ -224,7 +246,9 @@ def get_conversation_history(channel: str, thread_ts: str, current_ts: str, logg
         if msg.get("ts") == current_ts:
             continue
         text = (msg.get("text") or "").strip()
-        if not text or text == THINKING_PLACEHOLDER:
+        # Skip the placeholder and any status line a turn left behind (only possible if the
+        # dyno died mid-turn) — they're scaffolding, not something the bot actually said.
+        if not text or text == THINKING_PLACEHOLDER or text.startswith(status.WORKING):
             continue
         is_bot = msg.get("user") == BOT_USER_ID or bool(msg.get("bot_id"))
         if is_bot:
@@ -358,8 +382,12 @@ def answer_question(question: str, skill_ids: list[str], history: list[dict]) ->
 
     for block in final.content:
         if block.type == "text":
+            # A cut-off answer that looks complete is its own kind of silent failure.
+            if getattr(final, "stop_reason", None) == "max_tokens":
+                return block.text + "\n\n_(That got cut off — ask me to continue.)_"
             return block.text
-    return "Sorry, I couldn't generate a response."
+    return (":warning: The model came back with nothing for that one — no answer and no error. "
+            "Try rephrasing it and I'll have another go.")
 
 
 def _looks_like_action(question: str) -> bool:
@@ -370,8 +398,11 @@ def _looks_like_action(question: str) -> bool:
     return any(name in q or name.replace("-", " ") in q for name in TOOLS)
 
 
+# Only used when the Haiku cancel-intent call fails. Deliberately narrow: "don't" used to be
+# in here, which turned any sentence containing it ("don't forget the sheet index") into a
+# cancellation of whatever was running.
 _CANCEL_WORDS = ("stop", "cancel", "abort", "nevermind", "never mind", "wrong tool",
-                 "wrong file", "halt", "quit", "don't")
+                 "wrong file", "halt")
 
 
 def _is_cancel_request(question: str, logger) -> bool:
@@ -413,7 +444,7 @@ def _is_cancel_request(question: str, logger) -> bool:
         return any(w in ql for w in _CANCEL_WORDS)
 
 
-def respond_to_question(question, history, staging, prefetched_skill_ids, progress, on_artifacts, cancel_event, logger) -> "agent_loop.AgentResult":
+def respond_to_question(question, history, staging, prefetched_skill_ids, reporter, on_artifacts, cancel_event, logger) -> "agent_loop.AgentResult":
     """Route a turn. When `staging` is not None we're on the *action* path (a file was
     attached, a tool was named, or the selector classified intent as "action") → run the
     tool-use loop. Otherwise it's the unchanged retrieval Q&A path, reusing the skills the
@@ -429,11 +460,16 @@ def respond_to_question(question, history, staging, prefetched_skill_ids, progre
     try:
         if staging is not None:
             return agent_loop.run_agent(
-                anthropic_client, question, history, staging, TOOLS, progress, on_artifacts, cancel_event, logger
+                anthropic_client, question, history, staging, TOOLS, reporter, on_artifacts, cancel_event, logger
             )
 
-        skill_ids = prefetched_skill_ids if prefetched_skill_ids is not None else select_skills(question, history)
+        if prefetched_skill_ids is None:
+            reporter.doing("working out which docs cover this")
+            skill_ids = select_skills(question, history)
+        else:
+            skill_ids = prefetched_skill_ids
         logger.info(f"Selected skills: {skill_ids} (history turns: {len(history)})")
+        reporter.doing("reading the docs and writing your answer")
         answer = answer_question(question, skill_ids, history)
         if skill_ids:
             source_fmts = []
@@ -452,13 +488,19 @@ def respond_to_question(question, history, staging, prefetched_skill_ids, progre
         return agent_loop.AgentResult(text=answer)
     except anthropic.RateLimitError:
         logger.exception("Anthropic rate limit hit")
-        return agent_loop.AgentResult(text=":hourglass_flowing_sand: I'm getting rate-limited. Try again in a minute.")
+        return agent_loop.AgentResult(
+            text=":hourglass_flowing_sand: I'm getting rate-limited by the model API and have "
+                 "stopped. Nothing is still running — try me again in a minute.", failed=True)
     except anthropic.APIError as e:
         logger.exception("Anthropic API error")
-        return agent_loop.AgentResult(text=f":warning: I hit an API error: {e.message if hasattr(e, 'message') else e}")
+        return agent_loop.AgentResult(
+            text=f":x: I hit an API error and stopped: {e.message if hasattr(e, 'message') else e}",
+            failed=True)
     except Exception as e:
         logger.exception("Unexpected error in respond_to_question")
-        return agent_loop.AgentResult(text=f":x: Something went wrong: {e}")
+        return agent_loop.AgentResult(
+            text=f":x: Something went wrong on my side and I've stopped: `{type(e).__name__}: {e}`. "
+                 f"Nothing is still running in the background.", failed=True)
 
 
 def strip_mention(text: str) -> str:
@@ -471,7 +513,7 @@ def is_allowed(user_id: str | None) -> bool:
     return user_id in ALLOWED_USERS
 
 
-THINKING_PLACEHOLDER = ":hourglass_flowing_sand: _Thinking…_"
+THINKING_PLACEHOLDER = status.THINKING_PLACEHOLDER
 
 
 def recent_thread_files(channel: str, thread_ts: str, logger) -> list[dict]:
@@ -496,84 +538,112 @@ def recent_thread_files(channel: str, thread_ts: str, logger) -> list[dict]:
 
 
 def reply_with_thinking_indicator(question, channel, thread_ts, files, history, say, client, logger):
-    """Post a 'Thinking…' placeholder, generate the reply, then edit the placeholder to the
-    real answer. On the action path it also streams short progress updates ("Running
-    schedule-extractor…") and uploads any produced files into the thread afterward. Falls
-    back to a fresh message if chat.update fails, and always cleans up staged temp files."""
-    placeholder = say(text=THINKING_PLACEHOLDER, thread_ts=thread_ts)
-    placeholder_ts = placeholder.get("ts") if placeholder else None
+    """Post a 'Thinking…' placeholder, generate the reply, then edit that message into the
+    real answer. On the action path it also shows short progress lines ("Running
+    schedule-extractor…") and uploads produced files into the thread.
 
+    From the user's side, the whole turn is one promise: that message eventually says
+    something true. A status.Reporter owns it — it narrates progress, speaks up on its own
+    after 30 seconds of silence, and, because every exit below runs through finish()/fail(),
+    it is never left reading "Thinking…" forever. That last part is the bug this fixes: any
+    exception outside the one try/except used to leave the bot looking busy for good.
+    """
+    with status.turn(channel, thread_ts, say, client, logger) as reporter:
+        _run_turn(question, channel, thread_ts, files, history, say, client, logger, reporter)
+
+
+def _run_turn(question, channel, thread_ts, files, history, say, client, logger, reporter):
+    """The turn itself. Anything that escapes here is caught and reported by status.turn(),
+    so this body is free to `return` early without stranding the user."""
     # Register this run so a follow-up message on another thread can cancel it mid-task.
     task_key = tasks.key(channel, thread_ts)
     cancel_event = tasks.register(task_key)
 
-    # Throttled progress: only edits the placeholder when the message actually changes. The
-    # message is shown as-is (the model writes a friendly sentence), prefixed with an hourglass.
-    last_progress = {"text": None}
-
-    def progress(msg):
-        if not placeholder_ts or msg == last_progress["text"]:
-            return
-        last_progress["text"] = msg
-        try:
-            client.chat_update(
-                channel=channel, ts=placeholder_ts, text=f":hourglass_flowing_sand: {msg}"
-            )
-        except Exception:
-            logger.exception("progress chat_update failed (continuing)")
-
-    # Routing. A file or an explicitly-named tool always means "action". Otherwise ask the
-    # selector (the one call the Q&A path needs anyway) to classify intent, and reuse its
-    # skill picks so it isn't called twice. staging stays None on the pure-Q&A path.
-    prefetched_skills = None
-    action = bool(files) or _looks_like_action(question)
-    if not action and question.strip():
-        try:
-            intent, prefetched_skills = _run_selector(question, history)
-            action = intent == "action"
-        except Exception:
-            logger.exception("selector intent classification failed; defaulting to Q&A")
-    # On an action turn with no fresh attachment, reuse the file from earlier in the thread
-    # so follow-ups ("now highlight 'landscape' in it") don't make the user re-upload.
-    effective_files = files or []
-    if action and not effective_files:
-        effective_files = recent_thread_files(channel, thread_ts, logger)
-        if effective_files:
-            logger.info("Carrying %d file(s) forward from earlier in this thread", len(effective_files))
-    staging = (
-        slack_files.stage_attachments(effective_files, SLACK_BOT_TOKEN, TOOL_BACKEND, logger)
-        if action else None
-    )
-
-    # Upload produced files the moment a tool emits them (deduped by storage ref), so the
-    # user always gets output even if a later step errors or the loop hits its cap.
+    staging = None
     uploaded_refs: set = set()
+    undelivered: list = []
 
     def emit_artifacts(arts):
+        """Upload produced files the moment a tool emits them (deduped by storage ref), so the
+        user always gets output even if a later step errors or the loop hits its cap."""
         if staging is None or not arts:
             return
-        slack_files.upload_artifacts(client, channel, thread_ts, arts, staging, logger, seen=uploaded_refs)
+        undelivered.extend(
+            slack_files.upload_artifacts(client, channel, thread_ts, arts, staging, logger,
+                                         seen=uploaded_refs)
+        )
 
     try:
-        result = respond_to_question(
-            question, history, staging, prefetched_skills, progress, emit_artifacts, cancel_event, logger
-        )
-        text = result.text or "Done."
-        if placeholder_ts:
+        # Routing. A file or an explicitly-named tool always means "action". Otherwise ask the
+        # selector (the one call the Q&A path needs anyway) to classify intent, and reuse its
+        # skill picks so it isn't called twice. staging stays None on the pure-Q&A path.
+        prefetched_skills = None
+        action = bool(files) or _looks_like_action(question)
+        if not action and question.strip():
+            reporter.doing("working out what you're asking for")
             try:
-                client.chat_update(channel=channel, ts=placeholder_ts, text=text)
+                intent, prefetched_skills = _run_selector(question, history)
+                action = intent == "action"
             except Exception:
-                logger.exception("chat_update failed; posting answer as a new message")
+                logger.exception("selector intent classification failed; defaulting to Q&A")
+
+        # On an action turn with no fresh attachment, reuse the file from earlier in the thread
+        # so follow-ups ("now highlight 'landscape' in it") don't make the user re-upload.
+        effective_files = files or []
+        if action and not effective_files:
+            effective_files = recent_thread_files(channel, thread_ts, logger)
+            if effective_files:
+                logger.info("Carrying %d file(s) forward from earlier in this thread", len(effective_files))
+
+        if action:
+            if effective_files:
+                reporter.doing("downloading the file(s) from Slack")
+            staging = slack_files.stage_attachments(effective_files, SLACK_BOT_TOKEN, TOOL_BACKEND, logger)
+            staging.carried_forward = bool(effective_files) and not files
+            # Staging skips anything it can't fetch. If that swallowed everything the user
+            # attached to THIS message, say so now rather than letting the model flounder over
+            # an empty attachment list. Files merely carried over from earlier in the thread
+            # are a different matter — the user didn't ask for them this turn, so a failure
+            # there just goes into the prompt (staging.skipped) and the turn carries on.
+            if files and not staging.files:
+                why = ("\n" + "\n".join(f"- {r}" for r in staging.skipped)) if staging.skipped else ""
+                reporter.fail(
+                    f"I couldn't get hold of the file(s) for this:{why}\n\nTry re-uploading, "
+                    f"or tell me what you'd like me to do without them."
+                )
+                return
+
+        result = respond_to_question(
+            question, history, staging, prefetched_skills, reporter, emit_artifacts, cancel_event, logger
+        )
+        # The Q&A path has no way to abandon a call mid-flight, so a "stop" during one used to
+        # be acknowledged and then contradicted a second later by the answer landing anyway.
+        if cancel_event.is_set() and not result.cancelled:
+            logger.info("Turn completed after a cancel request — discarding the answer")
+            result = agent_loop.AgentResult(
+                text=":octagonal_sign: _Cancelled._", artifacts=result.artifacts,
+                work_dirs=result.work_dirs, trace=result.trace, cancelled=True,
+            )
+        text = result.text or "Done."
+        if not reporter.finish(text):
+            # Editing the message failed (Slack hiccup, message deleted) — the answer still
+            # has to reach the user, so start a fresh one.
+            logger.warning("Could not update the turn's message; posting the answer separately")
+            try:
                 say(text=text, thread_ts=thread_ts)
-        else:
-            say(text=text, thread_ts=thread_ts)
+            except Exception:
+                logger.exception("Could not post the answer at all")
 
         # Final sweep — uploads anything not already delivered incrementally (no-op if all
         # were). Skipped when cancelled so we don't push out the very output the user rejected.
         if staging is not None and result.artifacts and not result.cancelled:
-            slack_files.upload_artifacts(
-                client, channel, thread_ts, result.artifacts, staging, logger, seen=uploaded_refs
-            )
+            try:
+                undelivered.extend(slack_files.upload_artifacts(
+                    client, channel, thread_ts, result.artifacts, staging, logger, seen=uploaded_refs
+                ))
+            except Exception:
+                logger.exception("Final artifact upload failed")
+                undelivered.extend(result.artifacts)
 
         # Optional: persist the step-by-step trace for debugging (off unless TRACE_TO_S3 set).
         if staging is not None and result.trace and os.environ.get("TRACE_TO_S3"):
@@ -581,6 +651,23 @@ def reply_with_thinking_indicator(question, channel, thread_ts, files, history, 
                 staging, "\n".join(result.trace), f"{thread_ts}.txt", logger
             )
     finally:
+        # Always tell the user about a file that never made it, whichever way we got here —
+        # the answer above may well have promised it. reporter.note() posts a new message, so
+        # it works even once the answer has sealed the status message.
+        # Reconcile before crying wolf: an upload that failed incrementally is deliberately
+        # left out of uploaded_refs, so the final sweep retries it and often succeeds. Only
+        # something STILL missing is worth a warning — otherwise we'd post "couldn't attach
+        # it" directly underneath the file we just attached.
+        missing = list(dict.fromkeys(
+            art.get("filename") or "a file" for art in undelivered
+            if art.get("ref") not in uploaded_refs
+        ))
+        if missing:
+            reporter.note(
+                ":warning: I produced " + ", ".join(f"`{f}`" for f in missing)
+                + " but couldn't attach " + ("it" if len(missing) == 1 else "them")
+                + " to this thread. Ask me to try again and I'll re-run it."
+            )
         tasks.deregister(task_key, cancel_event)
         if staging is not None:
             slack_files.cleanup([staging], logger)
@@ -606,6 +693,12 @@ def _maybe_cancel(question, channel, thread_ts, say, logger) -> bool:
 def handle_app_mention(event, say, client, logger):
     if event.get("bot_id"):
         return
+    # A DM that @-mentions the bot arrives as BOTH app_mention and message — handling both
+    # ran the whole turn twice, with two placeholders and the tool billed twice. DM channel
+    # IDs start with "D"; the message handler already covers them.
+    if str(event.get("channel", "")).startswith("D"):
+        logger.info("Ignoring app_mention in a DM — the message handler owns this turn")
+        return
     user_id = event.get("user")
     if not is_allowed(user_id):
         logger.info(f"Ignoring app_mention from non-allowlisted user {user_id}")
@@ -628,7 +721,12 @@ def handle_app_mention(event, say, client, logger):
 def handle_message(event, say, client, logger):
     if event.get("channel_type") != "im":
         return
-    if event.get("bot_id") or event.get("subtype") == "bot_message":
+    # An edit or deletion arrives as message_changed/message_deleted with the original nested
+    # under event["message"] — so the bot_id check below misses it and the bot would re-run
+    # the whole turn (a second placeholder, the tool billed twice) on any edit.
+    if event.get("subtype") in ("bot_message", "message_changed", "message_deleted"):
+        return
+    if event.get("bot_id"):
         return
     user_id = event.get("user")
     if not is_allowed(user_id):
@@ -651,6 +749,25 @@ def handle_message(event, say, client, logger):
     reply_with_thinking_indicator(
         question, channel, thread_ts, files, history, say, client, logger
     )
+
+
+@app.error
+def handle_unexpected_listener_error(error, body, logger):
+    """Bolt's default handler writes to the log and nothing else, so anything that escapes a
+    listener is, from the user's side, the bot simply never answering. Try to say so."""
+    logger.exception("Unhandled listener error: %s", error)
+    try:
+        event = (body or {}).get("event") or {}
+        channel = event.get("channel")
+        thread_ts = event.get("thread_ts") or event.get("ts")
+        if channel and thread_ts:
+            app.client.chat_postMessage(
+                channel=channel, thread_ts=thread_ts,
+                text=f":x: I hit an unexpected error and couldn't process that "
+                     f"(`{type(error).__name__}`). Nothing is running — please try again.",
+            )
+    except Exception:
+        logger.exception("Could not even report the listener error to Slack")
 
 
 if __name__ == "__main__":

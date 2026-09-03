@@ -18,6 +18,7 @@ run_code as trusted-internal-but-observable. The Lambda is the real isolation bo
 
 from __future__ import annotations
 
+import ast
 import concurrent.futures
 import json
 import os
@@ -94,6 +95,16 @@ def run_code_tool_def() -> dict:
                         "or empty text."
                     ),
                 },
+                "user_confirmed": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Set true ONLY after the user has explicitly approved this specific "
+                        "action in the conversation. Required for code that deletes or "
+                        "overwrites the attached file or shells out; if you haven't asked yet, "
+                        "use the `ask_user` tool first and leave this false."
+                    ),
+                },
             },
             "required": ["code"],
             "additionalProperties": False,
@@ -103,6 +114,151 @@ def run_code_tool_def() -> dict:
 
 # Local venv directory per environment; the neural venv is a superset of the default one.
 _VENV_BY_ENV = {"default": ".venv", "neural_ocr": ".venv-ocr"}
+
+
+# --- "should I ask first?" ---------------------------------------------------------------
+# The sandbox is already ephemeral and network-less, so almost nothing model-written code does
+# outlives the run: files land in OUTPUT_DIR and go to Slack, everything else is thrown away.
+# That makes this list deliberately SHORT — only operations that reach outside the sandbox or
+# destroy the user's own attachment. A gate that cried wolf on ordinary file writes would just
+# train everyone to wave it through.
+#
+# This reads the parse tree rather than the source text, because model-written Python is
+# formatted however the model felt: a line-based scan missed `Path(INPUT_FILE).unlink()`, any
+# call split across lines, and every case where the path was in a variable.
+
+# Things that reach outside the sandbox no matter what they're pointed at.
+_ESCAPES_SANDBOX = {
+    "shutil.rmtree": "delete a whole directory tree",
+    "os.removedirs": "delete directories",
+    "os.system": "run a shell command",
+    "os.popen": "run a shell command",
+}
+_ESCAPE_PREFIXES = (("subprocess.", "run another program"), ("os.exec", "run another program"),
+                    ("os.spawn", "run another program"))
+
+# Things that are fine on scratch files but not on the file the user attached. Value is
+# (which argument must be the attached file, what it would do to it).
+_DESTROYS_INPUT = {
+    "os.remove": (0, "delete the file you attached"),
+    "os.unlink": (0, "delete the file you attached"),
+    "os.rename": (0, "move or rename the file you attached"),
+    "os.replace": (0, "move or rename the file you attached"),
+    "os.truncate": (0, "truncate the file you attached"),
+    "shutil.move": (0, "move the file you attached"),
+    "shutil.copy": (1, "overwrite the file you attached"),
+    "shutil.copy2": (1, "overwrite the file you attached"),
+    "shutil.copyfile": (1, "overwrite the file you attached"),
+}
+# pathlib equivalents, as methods called ON the attached file's path.
+_DESTRUCTIVE_METHODS = {
+    "unlink": "delete the file you attached",
+    "rmdir": "delete the file you attached",
+    "write_text": "overwrite the file you attached",
+    "write_bytes": "overwrite the file you attached",
+    "rename": "move or rename the file you attached",
+    "replace": "move or rename the file you attached",
+}
+_INPUT_KEYS = ("INPUT_FILE", "input_file")
+# Wrappers that keep a value a *path*. Deliberately excludes .read()/.read_text() and friends:
+# the CONTENTS of the attached file are not the attached file, and treating them as tainted
+# made ordinary `text.replace(...)` look like a rename.
+_PATH_WRAPPERS = {"Path", "pathlib.Path", "str", "os.fspath",
+                  "os.path.abspath", "os.path.realpath", "os.path.normpath"}
+
+
+def _dotted(node) -> str:
+    """'shutil.rmtree' for an Attribute/Name chain; '' for anything else."""
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+        return ".".join(reversed(parts))
+    return ""
+
+
+def _is_input_key(node) -> bool:
+    return isinstance(node, ast.Constant) and node.value in _INPUT_KEYS
+
+
+def _is_input_path(node, tainted: set) -> bool:
+    """Is this expression the path of the file the user attached?"""
+    if isinstance(node, ast.Name):
+        return node.id in tainted or node.id in _INPUT_KEYS
+    if isinstance(node, ast.Subscript):                     # os.environ["INPUT_FILE"]
+        return _is_input_key(node.slice)
+    if isinstance(node, ast.Call):
+        name = _dotted(node.func)
+        if name in ("os.environ.get", "os.getenv"):
+            return bool(node.args) and _is_input_key(node.args[0])
+        if name in _PATH_WRAPPERS:
+            return any(_is_input_path(a, tainted) for a in node.args)
+    return False
+
+
+def _writes(call: ast.Call) -> bool:
+    """Is this open() call opening for write/append?"""
+    mode = None
+    if len(call.args) > 1:
+        mode = call.args[1]
+    for kw in call.keywords:
+        if kw.arg == "mode":
+            mode = kw.value
+    if mode is None:
+        return False        # default "r"
+    return isinstance(mode, ast.Constant) and any(c in str(mode.value) for c in "wax+")
+
+
+def risky_operations(code: str) -> list[str]:
+    """Plain-English list of things this script would do that the user should approve first.
+
+    Static analysis, not a security control — the sandbox's isolation is that. This exists so
+    the bot stops and asks before the handful of actions a teammate would be annoyed to find
+    out about afterwards."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return []       # it can't run anyway; let the sandbox report the real error
+
+    risks: set[str] = set()
+    tainted: set[str] = set()
+
+    # Two passes: bind path variables first, so order of definition doesn't matter.
+    for _ in range(2):
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+                value = node.value
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                if value is not None and _is_input_path(value, tainted):
+                    for t in targets:
+                        for n in ast.walk(t):
+                            if isinstance(n, ast.Name):
+                                tainted.add(n.id)
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = _dotted(node.func)
+        if name in _ESCAPES_SANDBOX:
+            risks.add(_ESCAPES_SANDBOX[name])
+            continue
+        for prefix, what in _ESCAPE_PREFIXES:
+            if name.startswith(prefix) or name == "Popen":
+                risks.add(what)
+        if name in _DESTROYS_INPUT:
+            idx, what = _DESTROYS_INPUT[name]
+            if len(node.args) > idx and _is_input_path(node.args[idx], tainted):
+                risks.add(what)
+        elif name in ("open", "io.open") and node.args and _writes(node):
+            if _is_input_path(node.args[0], tainted):
+                risks.add("overwrite the file you attached")
+        elif isinstance(node.func, ast.Attribute) and node.func.attr in _DESTRUCTIVE_METHODS:
+            if _is_input_path(node.func.value, tainted):
+                risks.add(_DESTRUCTIVE_METHODS[node.func.attr])
+
+    return sorted(risks)
 
 
 def _sandbox_python(environment: str = "default") -> Path:
@@ -318,6 +474,17 @@ def run_code(tool_input: dict, staging, logger, notify=None) -> ToolInvocationRe
     environment = tool_input.get("environment") or "default"
     if environment not in _VENV_BY_ENV:
         environment = "default"
+
+    # Stop and make the bot ask before the few things a teammate wouldn't want done on a guess.
+    risks = risky_operations(code)
+    if risks and not tool_input.get("user_confirmed"):
+        logger.info("run_code: refusing unconfirmed risky code %s", risks)
+        return ToolInvocationResult.err(
+            "This code would " + ", and ".join(risks) + ". Don't run it yet: use the `ask_user` "
+            "tool to describe exactly what you're about to do and ask the user to confirm. If "
+            "they say yes, call run_code again with user_confirmed=true. If they'd rather you "
+            "didn't, find another way — writing new files into OUTPUT_DIR never needs approval."
+        )
 
     input_path = None
     handle = tool_input.get("input_file")

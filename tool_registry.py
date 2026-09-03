@@ -35,6 +35,7 @@ class ToolSpec:
     entrypoint: dict
     timeout_seconds: int
     dir: Path
+    confirm: bool = False     # tool.json "confirm": true -> never run without the user's OK
 
     def model_description(self) -> str:
         """The description string handed to Anthropic (when_to_use + output folded in,
@@ -75,6 +76,7 @@ def _parse(manifest: Path) -> ToolSpec | None:
         entrypoint=data.get("entrypoint") or {},
         timeout_seconds=int(data.get("timeout_seconds") or 300),
         dir=manifest.parent,
+        confirm=bool(data.get("confirm")),
     )
 
 
@@ -95,10 +97,29 @@ def discover_tools(tools_dir: Path = TOOLS_DIR) -> dict[str, ToolSpec]:
     return specs
 
 
+def _confirmable(schema: dict) -> dict:
+    """Add the `user_confirmed` flag to a tool that declares confirm:true, so the model has a
+    way to say "the user approved this" — see tool_runner.run_tool, which refuses without it."""
+    props = dict(schema.get("properties") or {})
+    props["user_confirmed"] = {
+        "type": "boolean",
+        "default": False,
+        "description": (
+            "Set true ONLY after the user has explicitly approved this specific action in the "
+            "conversation. If you haven't asked yet, use the `ask_user` tool first."
+        ),
+    }
+    return {**schema, "properties": props}
+
+
 def anthropic_tool_defs(specs: dict[str, ToolSpec]) -> list[dict]:
     """Anthropic tool-use defs for the registered tools. (The run_code sandbox tool is
     appended separately by agent_loop.)"""
     return [
-        {"name": s.name, "description": s.model_description(), "input_schema": s.input_schema}
+        {
+            "name": s.name,
+            "description": s.model_description(),
+            "input_schema": _confirmable(s.input_schema) if s.confirm else s.input_schema,
+        }
         for s in specs.values()
     ]

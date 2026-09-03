@@ -23,7 +23,8 @@ field:
 
 ```
 tools/<name>/
-  tool.json          ← machine contract: name, description, when_to_use, input_schema, entrypoint
+  tool.json          ← machine contract: name, description, when_to_use, input_schema, entrypoint,
+                       and optionally "confirm": true (see below)
   README.md          ← human/AI prose
   run.py             ← local entrypoint (stdin JSON in → result.json out)
   main*.py           ← the actual logic
@@ -33,6 +34,16 @@ tools/<name>/
   .env               ← the tool's secrets (gitignored)
   lambda/            ← Dockerfile + handler.py + template.yaml + deploy.sh (AWS Lambda)
 ```
+
+### Tools that need the user's OK
+
+A tool whose manifest sets `"confirm": true` is never run on the model's own judgement.
+`tool_runner.run_tool` refuses it unless the call carries `user_confirmed: true`, and tells the
+model to ask first with the `ask_user` tool — which ends the turn, puts the question in the
+thread, and waits for a human answer. Set it for anything that deletes, overwrites, posts
+outward, or spends money. All three tools here are read-only analysis, so none set it; the gate
+exists so the *next* tool can't quietly acquire blast radius. `run_code` has the same gate built
+in for the handful of operations that reach outside its scratch dir (see `sandbox.risky_operations`).
 
 Every `tool.json` is validated at startup against [`_schema.json`](_schema.json). A malformed
 manifest is logged and skipped — a broken tool never stops the bot from starting.
