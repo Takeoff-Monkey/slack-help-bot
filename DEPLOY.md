@@ -69,7 +69,7 @@ Then DM the bot a construction PDF and ask it to "extract the schedules". You sh
 
 ---
 
-## Part 2 — Deploy the two Lambdas (one-time, from your machine → AWS)
+## Part 2 — Deploy the Lambdas (one-time per function, from your machine → AWS)
 
 ### 2a. Install the missing prerequisite: AWS SAM CLI
 ```bash
@@ -85,17 +85,33 @@ Add an S3 **Lifecycle rule** on `help-bot-code-scratchpad` to expire objects und
 `runs/` after ~1 day (console → bucket → Management → Lifecycle rules).
 
 ### 2c. Deploy
-The scripts are at `tools/schedule-extractor/lambda/deploy.sh` and `sandbox/lambda/deploy.sh`.
-Run each from its own folder; first run is interactive (`--guided`) and saves a
-`samconfig.toml` so later runs are one command.
+Every tool has `tools/<name>/lambda/deploy.sh`, plus `sandbox/lambda/deploy.sh`. Run each from
+its own folder. All of them now ship a committed `samconfig.toml`, so they deploy
+non-interactively apart from one y/n changeset confirmation — `--guided` only kicks in for a
+brand-new tool that has no `samconfig.toml` yet.
+
+> **If `sam build` dies with `Credentials store error: docker-credential-gcloud`**, that is a
+> stale Google Cloud helper in `~/.docker/config.json`, not an AWS problem: the Docker SDK
+> eagerly resolves *every* configured `credHelpers` entry, and the gcloud one fails once its
+> token expires and it cannot prompt. Either run `gcloud auth login`, or sidestep it with a
+> throwaway Docker config that keeps your ECR auth but drops the helpers:
+>
+> ```bash
+> python3 -c "import json,pathlib;c=json.loads((pathlib.Path.home()/'.docker/config.json').read_text());d=pathlib.Path('/tmp/dockercfg-sam');d.mkdir(exist_ok=True);(d/'config.json').write_text(json.dumps({k:v for k,v in c.items() if k!='credHelpers'}))"
+> DOCKER_CONFIG=/tmp/dockercfg-sam sam build && DOCKER_CONFIG=/tmp/dockercfg-sam ./deploy.sh
+> ```
+>
+> A first deploy with no `samconfig.toml` also needs an S3 bucket for the packaged template —
+> that is what `resolve_s3 = true` in each `samconfig.toml` supplies (`--resolve-s3` on the
+> command line). Without it SAM stops with "S3 Bucket not specified".
 
 ```bash
 # Tool Lambda → creates function: tm-tool-schedule-extractor
 cd tools/schedule-extractor/lambda
 SCRATCH_BUCKET=help-bot-code-scratchpad ./deploy.sh
-#   guided prompts: stack name (accept default), region us-east-1, confirm changeset = Y,
-#   "allow SAM to create IAM roles" = Y, ScratchBucket = help-bot-code-scratchpad,
-#   OpenAIApiKey = (leave blank unless you turn GPT_CLEANUP on), save args = Y.
+#   Only prompts if samconfig.toml is missing. Since 2194d36 the cleanup step uses Claude,
+#   so the parameter is AnthropicApiKey (leave blank unless you turn AI_CLEANUP on in main2.py),
+#   NOT the old OpenAIApiKey.
 
 # The other tool Lambdas (same pattern; each creates tm-tool-<name>)
 cd ../../bid-scanner/lambda            && SCRATCH_BUCKET=help-bot-code-scratchpad ./deploy.sh
@@ -118,6 +134,12 @@ so a slower first build). Your `KonurPapa` user needs rights to create CloudForm
 ## Part 3 — Give the bot AWS credentials (to invoke the Lambdas)
 
 The Lambdas have their own roles; the **bot** just needs to invoke them + use the bucket.
+
+> **Current reality (checked 2026-09-04):** the Heroku dyno is using the account owner's key
+> (`AKIA…CFND`, IAM user `KonurPapa`), not a scoped user — so it can already invoke everything
+> and no policy update was needed when the four new functions went in. The scoped user below is
+> still the better setup; switching to it is a standalone hardening task.
+
 Create a dedicated least-privilege IAM user (don't reuse your personal keys):
 
 `bot-invoke-policy.json`:
@@ -190,8 +212,9 @@ heroku logs --tail -a slack-help-bot     # look for: Discovered tool 'schedule-e
 | Thing | Value |
 |---|---|
 | Scratch bucket | `help-bot-code-scratchpad` (us-east-1) |
-| Tool Lambdas | `tm-tool-schedule-extractor`, `tm-tool-bid-scanner`, `tm-tool-wall-height-calculator`, `tm-tool-arazoza-formatter` |
-| Sandbox Lambdas | `tm-sandbox-runcode` (default), `tm-sandbox-runcode-ocr` (neural OCR) |
+| Tool Lambdas | `tm-tool-schedule-extractor`, `tm-tool-bid-scanner`, `tm-tool-wall-height-calculator`, `tm-tool-arazoza-formatter` — all deployed 2026-09-04 except schedule-extractor (see below) |
+| Sandbox Lambdas | `tm-sandbox-runcode` (default), `tm-sandbox-runcode-ocr` (neural OCR) — both deployed 2026-09-04 |
+| ⚠️ Known drift | `tm-tool-schedule-extractor` is still the 2026-06-12 image: it predates `ba18177` (schedule-keyword fix + Textract OCR fallback) and `2194d36` (arbitrary-script OCR, and the OpenAI→Anthropic cleanup migration, which renamed the template parameter `OpenAIApiKey`→`AnthropicApiKey`). Redeploy it when you're ready to supply/confirm that parameter. |
 | Heroku app | `slack-help-bot` |
 | New Slack scope | `files:write` (reinstall) |
 | Prod env vars | `TOOL_BACKEND=lambda`, `SCRATCH_S3_BUCKET`, `AWS_*` |

@@ -1,0 +1,14 @@
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "tm-tool-wall-height-calculator"
+resolve_s3 = true
+s3_prefix = "tm-tool-wall-height-calculator"
+resolve_image_repos = true
+region = "us-east-1"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+parameter_overrides = "ScratchBucket=\"help-bot-code-scratchpad\""
+
+[default.global.parameters]
+region = "us-east-1"
