@@ -30,6 +30,12 @@ sandbox/**/__pycache__/
 # AWS SAM build output (container Lambdas)
 .aws-sam/
 
+# Real customer worksheets used for local testing (may carry a client's name/email/phone).
+# This repo is public — never commit one. Sample_test_sheets (a sibling directory outside the
+# repo) is the established home for these; tools/arazoza-formatter/tests/samples/ is the
+# equivalent for this tool, kept local-only by this rule.
+tools/arazoza-formatter/tests/samples/
+
 # Explicitly track these required files
 !app.py
 !Procfile

@@ -1,5 +1,9 @@
 # Deploying the bot's tools (install + push)
 
+> **Already set up and just shipping a change?** See [README.md § Deploy a code change](README.md#deploy-a-code-change)
+> for the short version. This file is the one-time setup this quick version assumes is
+> already done, and the full reference for every knob mentioned there.
+
 There are **four Python environments** and they never mix:
 
 | Environment | Where | Built by | Holds |
@@ -44,6 +48,9 @@ pip install -r requirements.txt
 
 # 2) Tool + sandbox venvs (already built once; re-run after a fresh clone)
 ./tools/schedule-extractor/setup.sh
+./tools/bid-scanner/setup.sh
+./tools/wall-height-calculator/setup.sh
+./tools/arazoza-formatter/setup.sh
 ./sandbox/setup.sh
 
 # 3) Make sure your local .env (repo root) has these, and you're allowlisted:
@@ -90,6 +97,11 @@ SCRATCH_BUCKET=help-bot-code-scratchpad ./deploy.sh
 #   "allow SAM to create IAM roles" = Y, ScratchBucket = help-bot-code-scratchpad,
 #   OpenAIApiKey = (leave blank unless you turn GPT_CLEANUP on), save args = Y.
 
+# The other tool Lambdas (same pattern; each creates tm-tool-<name>)
+cd ../../bid-scanner/lambda            && SCRATCH_BUCKET=help-bot-code-scratchpad ./deploy.sh
+cd ../../wall-height-calculator/lambda && SCRATCH_BUCKET=help-bot-code-scratchpad ./deploy.sh
+cd ../../arazoza-formatter/lambda      && SCRATCH_BUCKET=help-bot-code-scratchpad ./deploy.sh
+
 # Sandbox Lambdas → creates BOTH functions: tm-sandbox-runcode + tm-sandbox-runcode-ocr
 cd ../../../sandbox/lambda
 SCRATCH_BUCKET=help-bot-code-scratchpad ./deploy.sh
@@ -116,6 +128,9 @@ Create a dedicated least-privilege IAM user (don't reuse your personal keys):
     { "Effect": "Allow", "Action": "lambda:InvokeFunction",
       "Resource": [
         "arn:aws:lambda:us-east-1:191219945009:function:tm-tool-schedule-extractor",
+        "arn:aws:lambda:us-east-1:191219945009:function:tm-tool-bid-scanner",
+        "arn:aws:lambda:us-east-1:191219945009:function:tm-tool-wall-height-calculator",
+        "arn:aws:lambda:us-east-1:191219945009:function:tm-tool-arazoza-formatter",
         "arn:aws:lambda:us-east-1:191219945009:function:tm-sandbox-runcode",
         "arn:aws:lambda:us-east-1:191219945009:function:tm-sandbox-runcode-ocr"
       ] },
@@ -175,7 +190,7 @@ heroku logs --tail -a slack-help-bot     # look for: Discovered tool 'schedule-e
 | Thing | Value |
 |---|---|
 | Scratch bucket | `help-bot-code-scratchpad` (us-east-1) |
-| Tool Lambda | `tm-tool-schedule-extractor` |
+| Tool Lambdas | `tm-tool-schedule-extractor`, `tm-tool-bid-scanner`, `tm-tool-wall-height-calculator`, `tm-tool-arazoza-formatter` |
 | Sandbox Lambdas | `tm-sandbox-runcode` (default), `tm-sandbox-runcode-ocr` (neural OCR) |
 | Heroku app | `slack-help-bot` |
 | New Slack scope | `files:write` (reinstall) |

@@ -22,6 +22,10 @@ requirements.txt         ← Python deps
 
 ## Deploy a code change
 
+What to run depends on whether you touched a `tools/<name>/` tool's own logic, or just the bot.
+
+### Bot-only change (app2.py, agent_loop.py, docs/skills, …)
+
 ```bash
 git add <files>
 git commit -m "message"
@@ -34,6 +38,35 @@ Heroku rebuilds and auto-restarts after each push. Watch logs to confirm:
 ```bash
 heroku logs --tail -a slack-help-bot
 ```
+
+### A tool was added, or its logic changed (anything under `tools/<name>/`)
+
+Production runs `TOOL_BACKEND=lambda` — the tool's own `.venv` is gitignored, so it never
+reaches the Heroku dyno. Pushing the code makes the bot *discover* the tool, but running it
+still needs that tool's **AWS Lambda** built or updated, which only someone with AWS
+credentials can do (this repo's assistant does not deploy live AWS on its own):
+
+```bash
+# 1. Ship the code, same as above
+git add <files> && git commit -m "message"
+git push heroku main && git push origin main
+
+# 2. Deploy/update that tool's Lambda (from your machine — needs Docker + AWS SAM,
+#    see DEPLOY.md Part 2a if they aren't installed yet)
+cd tools/<name>/lambda
+SCRATCH_BUCKET=help-bot-code-scratchpad ./deploy.sh
+
+# 3. First time only for a brand-new tool: add its function's ARN to the bot's IAM
+#    policy — see DEPLOY.md Part 3 for the policy JSON and the put-user-policy command.
+```
+
+Until step 2 is done, calling that tool in Slack fails cleanly (a "Lambda invoke failed"
+error) rather than silently — the bot never falls back to the missing local venv in
+production.
+
+[DEPLOY.md](DEPLOY.md) has the full one-time setup this quick version assumes is already
+done: the scratch S3 bucket, the `files:write` Slack scope, the bot's IAM user, and the
+cold-start/status-message tuning knobs.
 
 ## Watch / debug
 

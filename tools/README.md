@@ -24,7 +24,7 @@ field:
 ```
 tools/<name>/
   tool.json          ← machine contract: name, description, when_to_use, input_schema, entrypoint,
-                       and optionally "confirm": true (see below)
+                       and optionally "confirm": true (see below) and "triggers" (see below)
   README.md          ← human/AI prose
   run.py             ← local entrypoint (stdin JSON in → result.json out)
   main*.py           ← the actual logic
@@ -41,9 +41,28 @@ A tool whose manifest sets `"confirm": true` is never run on the model's own jud
 `tool_runner.run_tool` refuses it unless the call carries `user_confirmed: true`, and tells the
 model to ask first with the `ask_user` tool — which ends the turn, puts the question in the
 thread, and waits for a human answer. Set it for anything that deletes, overwrites, posts
-outward, or spends money. All three tools here are read-only analysis, so none set it; the gate
+outward, or spends money. The three analysis tools here are read-only, so none set it; the gate
 exists so the *next* tool can't quietly acquire blast radius. `run_code` has the same gate built
 in for the handful of operations that reach outside its scratch dir (see `sandbox.risky_operations`).
+(`arazoza-formatter` writes a *new* copy of the workbook and never touches the original, so it
+doesn't need the gate either.)
+
+### Tools with hard routing rules (`triggers`)
+
+A manifest may declare `"triggers": {"keywords": [...], "action_words": [...], "filename_contains": [...]}`
+(`keywords`/`action_words` are case-insensitive regexes; a plain phrase is a fine regex):
+- a **keyword** in the user's message ("arazoza") *together with* an **action word** ("format",
+  "clean up", "worksheet"…) makes the turn an *action* deterministically
+  (`app2._looks_like_action` → `tool_registry.action_triggered`), the same as naming the tool.
+  The bare keyword is left to the selector, so a question *about* Arazoza is still answered;
+- a **filename** substring on an attachment, or a keyword hit, adds a *routing note* to the
+  model's context (`tool_registry.routing_note`) naming the tool. The note respects
+  `accepts.file_types`: when the tool needs a file and no acceptable one is attached (nothing,
+  or only a schedule PNG / an old `.xls`), it tells the model to stop and ask for it with
+  `ask_user` rather than improvise with `run_code` or call the tool on the wrong file.
+
+Use it for rules the model kept getting wrong on its own; the ordinary case is still
+`when_to_use`. `arazoza-formatter` is the first tool to use it.
 
 Every `tool.json` is validated at startup against [`_schema.json`](_schema.json). A malformed
 manifest is logged and skipped — a broken tool never stops the bot from starting.
@@ -104,12 +123,13 @@ Add it in the Slack app's *OAuth & Permissions* and **reinstall the app**.
 2. `cd tools/schedule-extractor/lambda && SCRATCH_BUCKET=<bucket> ./deploy.sh`
 3. `cd tools/bid-scanner/lambda && SCRATCH_BUCKET=<bucket> ./deploy.sh`
 4. `cd tools/wall-height-calculator/lambda && SCRATCH_BUCKET=<bucket> ./deploy.sh`
-5. `cd sandbox/lambda && SCRATCH_BUCKET=<bucket> ./deploy.sh` (builds BOTH sandbox images:
+5. `cd tools/arazoza-formatter/lambda && SCRATCH_BUCKET=<bucket> ./deploy.sh`
+6. `cd sandbox/lambda && SCRATCH_BUCKET=<bucket> ./deploy.sh` (builds BOTH sandbox images:
    `tm-sandbox-runcode` and `tm-sandbox-runcode-ocr`)
-6. Set the bot's config: `TOOL_BACKEND=lambda`, `SCRATCH_S3_BUCKET=<bucket>`, and AWS creds.
+7. Set the bot's config: `TOOL_BACKEND=lambda`, `SCRATCH_S3_BUCKET=<bucket>`, and AWS creds.
 
 ### Bot IAM policy (Heroku access keys)
-The bot only needs to invoke the five functions and read/write the scratch bucket:
+The bot only needs to invoke the six functions and read/write the scratch bucket:
 ```json
 {
   "Version": "2012-10-17",
@@ -120,6 +140,7 @@ The bot only needs to invoke the five functions and read/write the scratch bucke
         "arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:tm-tool-schedule-extractor",
         "arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:tm-tool-bid-scanner",
         "arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:tm-tool-wall-height-calculator",
+        "arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:tm-tool-arazoza-formatter",
         "arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:tm-sandbox-runcode",
         "arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:tm-sandbox-runcode-ocr"
       ] },
@@ -130,7 +151,8 @@ The bot only needs to invoke the five functions and read/write the scratch bucke
 }
 ```
 The Lambdas use their **own** execution roles (schedule-extractor: Textract + scratch
-bucket; bid-scanner, wall-height-calculator, and both sandbox functions: scratch bucket only)
+bucket; bid-scanner, wall-height-calculator, arazoza-formatter, and both sandbox functions:
+scratch bucket only)
 — no static keys inside them.
 
 > Region convention: `us-east-1`. Owner: Konur Papageorgiou; general escalation: Tommy Lather.

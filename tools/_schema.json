@@ -53,6 +53,16 @@
     "confirm": {
       "type": "boolean",
       "description": "Set true if running this tool makes a change the user would want a say in (deletes, overwrites, posts somewhere, spends money). The bot then refuses to run it until the model has asked via ask_user and passes user_confirmed=true. Defaults to false — the read-only analysis tools don't need it."
+    },
+    "triggers": {
+      "type": "object",
+      "description": "Optional deterministic routing on top of the model's judgement. keywords: case-insensitive regexes; one appearing in the user's message adds a routing note naming this tool, and — together with an action_words match, or on its own if action_words is absent — makes the turn an action. action_words: case-insensitive regexes for the verbs/nouns that make a keyword hit an actual request (format, clean up, worksheet…), so questions merely mentioning the keyword are left to the selector. filename_contains: case-insensitive substrings of an attachment's filename that add a routing note pointing the model at this tool. Notes respect accepts.file_types: with no acceptable file attached they tell the model to ask for one with ask_user instead of starting.",
+      "properties": {
+        "keywords": { "type": "array", "items": { "type": "string" } },
+        "action_words": { "type": "array", "items": { "type": "string" } },
+        "filename_contains": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
     }
   }
 }

@@ -1,0 +1,45 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  arazoza-formatter tool as a synchronous (request/response) Lambda for the Takeoff Monkey
+  Slack bot. Reads an Arazoza takeoff worksheet (.xlsx/.xlsm) from the scratch S3 bucket,
+  reshapes it into the standard worksheet layout with openpyxl, writes the formatted copy
+  back to S3, returns a JSON result. No other AWS services are used.
+
+Parameters:
+  ScratchBucket:
+    Type: String
+    Description: S3 bucket the bot stages inputs to and reads outputs from.
+
+Globals:
+  Function:
+    Timeout: 120
+    MemorySize: 1024
+
+Resources:
+  ArazozaFormatterFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: tm-tool-arazoza-formatter
+      PackageType: Image
+      Architectures: [x86_64]
+      Environment:
+        Variables:
+          SCRATCH_S3_BUCKET: !Ref ScratchBucket
+      Policies:
+        # Scratch bucket only (least privilege) — read inputs, write outputs.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+              Resource: !Sub "arn:aws:s3:::${ScratchBucket}/*"
+    Metadata:
+      Dockerfile: lambda/Dockerfile
+      DockerContext: ..          # the tool dir (so formatter.py + takeoff-groupings.txt are in scope)
+      DockerTag: latest
+
+Outputs:
+  FunctionName:
+    Value: !Ref ArazozaFormatterFunction
+    Description: Set this as the bot's tool.json entrypoint.lambda.function_name (already tm-tool-arazoza-formatter).

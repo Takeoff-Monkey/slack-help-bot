@@ -407,7 +407,13 @@ def _looks_like_action(question: str) -> bool:
     explicitly names a registered tool. Attachments also force the action path (the caller
     handles that). Smarter text-only intent detection is folded into the selector later."""
     q = question.lower()
-    return any(name in q or name.replace("-", " ") in q for name in TOOLS)
+    if any(name in q or name.replace("-", " ") in q for name in TOOLS):
+        return True
+    # Tools can also declare triggers in tool.json: a keyword ("arazoza") together with an
+    # action word ("format", "clean up", "worksheet"…) is as explicit as naming the tool, so it
+    # takes the action path deterministically. The bare keyword is left to the selector — a
+    # question *about* Arazoza must still be answered, not met with a demand for a worksheet.
+    return tool_registry.action_triggered(TOOLS, q)
 
 
 # Only used when the Haiku cancel-intent call fails. Deliberately narrow: "don't" used to be

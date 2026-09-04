@@ -101,6 +101,7 @@ OCR & scanned images:
 
 Files & output:
 - Attached files are listed with handles like `file_1`. Pass those handles to a tool's `input_file` field. In `run_code`, the file you name is at env `INPUT_FILE`, and anything you write to env `OUTPUT_DIR` is uploaded to the thread automatically.
+- A *Routing note* in the conversation comes from a tool's own trigger rules (a filename pattern, a phrase in the request). Follow it: use the tool it names, or — when it says the tool needs a file that isn't attached — stop and ask for the file with `ask_user` instead of starting anything.
 - Every file a tool or `run_code` produces is uploaded to the Slack thread for the user automatically. Never re-create, re-deliver, or tell the user where to find a file.
 - When finished, reply with one or two plain sentences summarizing what you did. Do NOT paste raw tool JSON.
 
@@ -261,7 +262,10 @@ def run_agent(client, question, history, staging, tool_specs, reporter, on_artif
     sandbox.prewarm(logger)
 
     attach_note = slack_files.attachments_for_prompt(staging)
-    user_turn = f"{question}\n\n{attach_note}" if attach_note else question
+    # Tool-declared triggers (tool.json "triggers") -> a routing note: "this attachment's name
+    # says it's for tool X", or "this request needs a file and none is attached, so ask".
+    routing = tool_registry.routing_note(tool_specs, question, staging.files if staging else [])
+    user_turn = "\n\n".join(part for part in (question, attach_note, routing) if part)
     messages = _normalize(list(history) + [{"role": "user", "content": user_turn}])
 
     artifacts: list = []
@@ -270,6 +274,9 @@ def run_agent(client, question, history, staging, tool_specs, reporter, on_artif
     used_a_tool = False                 # did anything actually happen this turn?
     nudged = False                      # we only ever poke the model once (see below)
     trace: list = [f"USER: {question!r} | files={[f.handle for f in staging.files]}"]
+    if routing:
+        trace.append(f"ROUTING: {routing}")
+        logger.info("agent: routing note | %s", _short(routing, 200))
 
     def emit(arts):
         """Accumulate + immediately upload artifacts a tool just produced."""

@@ -1,0 +1,69 @@
+{
+  "name": "arazoza-formatter",
+  "version": "1",
+  "description": "Format an Arazoza Brothers takeoff worksheet (.xlsx/.xlsm) into the standard Takeoff Monkey worksheet layout. In a fixed order it: relabels the group headers in 'Description' to the numbered takeoff groupings (e.g. 'Trees' → '1 - Trees & Palms'), moves the item names from 'Size' into 'Description', moves the sizing from 'Notes' into 'Size', appends the size to each description with ' - ', sets Size/Package for soil & mulch items that state a depth, normalises UOM values (count/ea/each → Unit, sf → Square Feet, lf → Linear Feet), and copies package types found in Size (FG, cont/container, B&B) into 'Package'. Any header it cannot match — or matches to more than one grouping — is filled RED for a human to check. Produces a NEW copy of the workbook (VBA, tables and formulas preserved); the original is never modified.",
+  "when_to_use": "Use when the user says a job or worksheet is an Arazoza project, or when an attached spreadsheet's filename contains 'Arazoza' and they want it formatted, cleaned up, or prepared. Pass the worksheet (.xlsx/.xlsm) as input_file — never a schedule image or PDF. A worksheet MUST be attached: if the user talks about an Arazoza job but no worksheet is attached to this message or earlier in the thread, do not start any work and do not reach for run_code — use ask_user to ask them to upload the Arazoza worksheet first. Its steps must run in a fixed order, so never reproduce or 'finish' them with run_code. Do NOT use for non-Arazoza worksheets, or for pulling schedules out of PDFs (that's schedule-extractor).",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "input_file": {
+        "type": "string",
+        "description": "Handle of the attached Arazoza worksheet (.xlsx or .xlsm) to format, e.g. \"file_1\". Must be one of the file handles listed in the conversation, and must be the spreadsheet — not a schedule image."
+      },
+      "sheet_name": {
+        "type": "string",
+        "description": "Optional: the sheet to format. Omit it and the tool finds the sheet with the worksheet's 'Description'/'Size' header row itself (the normal case). Only set this if the user named a sheet or the tool reported it couldn't find the table."
+      },
+      "force": {
+        "type": "boolean",
+        "default": false,
+        "description": "Leave false. The tool refuses a sheet that doesn't look like a raw Arazoza worksheet (nothing in 'Size' to move into 'Description'), because running on an already-formatted sheet would flag every item red. Set true ONLY if the user has explicitly told you to run it anyway."
+      }
+    },
+    "required": [
+      "input_file"
+    ],
+    "additionalProperties": false
+  },
+  "accepts": {
+    "file_types": [
+      "xlsx",
+      "xlsm"
+    ],
+    "max_files": 1
+  },
+  "output": "A new copy of the workbook named '<original name> - formatted.<ext>' with the worksheet formatted in place on its sheet, plus a text summary: which group headers were relabelled to what, which cells were filled red and why (unmatched or ambiguous headers, rows where Description and Size were both filled), how many items/notes were moved and merged, soil/mulch depth rows, UOM conversions, and packages filled. Red-filled cells always need a human look.",
+  "entrypoint": {
+    "local": {
+      "type": "subprocess",
+      "cmd": [
+        "run.py"
+      ],
+      "cwd": "tools/arazoza-formatter"
+    },
+    "lambda": {
+      "type": "lambda",
+      "function_name": "tm-tool-arazoza-formatter"
+    }
+  },
+  "timeout_seconds": 120,
+  "triggers": {
+    "keywords": [
+      "\\barazoza(?:'s)?\\b"
+    ],
+    "action_words": [
+      "\\b(?:re)?format(?:s|ted|ting)?\\b",
+      "\\bclean(?:s|ed|ing|up|-up)?\\b",
+      "\\bprep(?:s|ped|ping|are|ared|aring|aration)?\\b",
+      "\\bfix(?:es|ed|ing)?\\b",
+      "\\bprocess(?:es|ed|ing)?\\b",
+      "\\bconvert(?:s|ed|ing)?\\b",
+      "\\brun\\b",
+      "\\bworksheets?\\b",
+      "\\bspreadsheets?\\b"
+    ],
+    "filename_contains": [
+      "arazoza"
+    ]
+  }
+}
