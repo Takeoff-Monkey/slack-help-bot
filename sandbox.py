@@ -46,6 +46,100 @@ SANDBOX_PREWARM = os.environ.get("SANDBOX_PREWARM", "1").lower() not in ("0", "f
 PREWARM_TTL_SECONDS = int(os.environ.get("SANDBOX_PREWARM_TTL_SECONDS", "240"))
 
 
+# --- what the sandbox can and cannot open -----------------------------------------------
+# Formats no library in the toolkit can read, mapped to what to ask the teammate for instead.
+#
+# Why this exists: a legacy .xls attachment once cost an entire turn. The model tried openpyxl,
+# then pandas, then probed for xlrd / xlwt / xlutils / pyexcel / olefile / win32com one by one —
+# six steps discovering that none was installed and that there is no network to install any of
+# them — and the turn ended by asking the teammate to re-upload as .xlsx. That question was
+# answerable in the first second, before any work started. (.xls itself is now readable: xlrd
+# is in requirements.txt. This table is for the formats that genuinely remain out of reach.)
+#
+# Keep this HONEST — an entry here makes the bot refuse to try. Anything the toolkit can
+# actually open (.xlsx/.xlsm, .xls, .csv, .pdf, .docx, .pptx, images, .zip, text/json/xml)
+# must NOT be listed.
+UNREADABLE_FORMATS = {
+    # Legacy Microsoft binaries — the modern OOXML twin is readable, the old one isn't.
+    "doc":     ("a Word 97–2003 binary document", "re-save it as .docx"),
+    "ppt":     ("a PowerPoint 97–2003 binary deck", "re-save it as .pptx"),
+    "xlsb":    ("a binary Excel workbook", "re-save it as .xlsx"),
+    "msg":     ("an Outlook message", "forward it as .eml, or paste the text"),
+    "wpd":     ("a WordPerfect document", "re-save it as .docx or PDF"),
+    # OpenDocument — no odfpy in the toolkit.
+    "odt":     ("an OpenDocument text file", "export it as .docx or PDF"),
+    "ods":     ("an OpenDocument spreadsheet", "export it as .xlsx"),
+    "odp":     ("an OpenDocument presentation", "export it as .pptx or PDF"),
+    # Apple iWork — bundles, not documents.
+    "pages":   ("an Apple Pages document", "export it as .docx or PDF"),
+    "numbers": ("an Apple Numbers spreadsheet", "export it as .xlsx"),
+    "key":     ("an Apple Keynote deck", "export it as .pptx or PDF"),
+    # Rich text / images without a decoder here.
+    "rtf":     ("a rich-text document", "re-save it as .docx or PDF"),
+    "heic":    ("an Apple HEIC image", "export it as .jpg or .png"),
+    "heif":    ("a HEIF image", "export it as .jpg or .png"),
+    # CAD / BIM — plausible on takeoff work, and nothing here can parse them.
+    "dwg":     ("an AutoCAD drawing", "export the sheets as PDF"),
+    "dxf":     ("a CAD exchange drawing", "export the sheets as PDF"),
+    "rvt":     ("a Revit model", "export the sheets as PDF"),
+    "skp":     ("a SketchUp model", "export what you need as PDF or an image"),
+    "ifc":     ("an IFC/BIM model", "export a PDF or a schedule as .xlsx"),
+    # Archives the stdlib can't open (.zip it can).
+    "rar":     ("a RAR archive", "re-compress it as .zip"),
+    "7z":      ("a 7-Zip archive", "re-compress it as .zip"),
+}
+
+
+def _ext(filename: str) -> str:
+    return (filename or "").rsplit(".", 1)[-1].lower() if "." in (filename or "") else ""
+
+
+def unreadable_attachments(files) -> list:
+    """[(StagedFile, what it is, what to ask for)] for attachments nothing here can open."""
+    out = []
+    for f in files or []:
+        hit = UNREADABLE_FORMATS.get(_ext(f.filename))
+        if hit:
+            out.append((f, hit[0], hit[1]))
+    return out
+
+
+def capability_note(files) -> str:
+    """A note for the model's context when an attachment is in a format the sandbox cannot
+    read — so it says so in its first sentence instead of finding out over five failed calls.
+    Returns '' when every attachment is fine (the common case)."""
+    bad = unreadable_attachments(files)
+    if not bad:
+        return ""
+    lines = []
+    for f, what, ask in bad:
+        lines.append(f"- `{f.handle}` ({f.filename}) is {what}. No library in the sandbox can "
+                     f"open it, and there is no network to install one. Ask them to {ask}.")
+    return ("Capability note — an attachment is in a format you CANNOT read:\n"
+            + "\n".join(lines)
+            + "\nDo not try anyway: there is no import, engine, or workaround that will open it, "
+              "and attempting one just spends the turn. If the task needs what is inside this "
+              "file, use `ask_user` NOW — in your first move, before any other tool call — to "
+              "tell them plainly that this format can't be read and what to send instead. If "
+              "other attachments cover the request on their own, carry on with those.")
+
+
+def clip_output(text: str | None, limit: int = MAX_OUTPUT_CHARS) -> str | None:
+    """Trim printed output for the model, keeping BOTH ends.
+
+    The old error path kept only the tail, which is right for a traceback but wrong for an
+    inspection dump: the header row and first data rows — the part the model actually needs to
+    work out a sheet's layout — live at the top."""
+    if not text:
+        return None
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    head = limit * 2 // 3
+    tail = limit - head
+    return f"{text[:head]}\n\n…[{len(text) - limit} characters trimmed from the middle]…\n\n{text[-tail:]}"
+
+
 def run_code_tool_def() -> dict:
     return {
         "name": "run_code",
@@ -57,7 +151,9 @@ def run_code_tool_def() -> dict:
             "Two environments are available via the `environment` field:\n"
             "- \"default\" (use this FIRST): Tesseract OCR (`pytesseract` + the `tesseract` "
             "binary), `cv2` (OpenCV, image preprocessing), `fitz` (PyMuPDF), `pdfplumber`, "
-            "`pdf2image`, `pandas`, `numpy`, `PIL` (Pillow), `openpyxl`/`xlsxwriter`, "
+            "`pdf2image`, `pandas`, `numpy`, `PIL` (Pillow), `openpyxl`/`xlsxwriter` "
+            "(.xlsx/.xlsm) and `xlrd` (legacy .xls — pandas.read_excel picks it up "
+            "automatically, so read a .xls exactly as you would a .xlsx), "
             "`docx` (python-docx), `pptx` (python-pptx), `reportlab`, `tabulate`, and the "
             "standard library.\n"
             "- \"neural_ocr\": everything in default PLUS `rapidocr_onnxruntime` (RapidOCR), a "
@@ -72,9 +168,20 @@ def run_code_tool_def() -> dict:
             "Environment available to your script:\n"
             "- env var `INPUT_FILE`: absolute path to the attached file you named in `input_file` "
             "(absent if you didn't name one).\n"
-            "- env var `OUTPUT_DIR`: write every file you want returned to the user into this "
-            "directory. Anything written there is uploaded back to Slack automatically.\n"
+            "- env var `OUTPUT_DIR`: write every file you want returned to the USER into this "
+            "directory. Anything written there is uploaded to Slack automatically, so it is for "
+            "finished deliverables ONLY — never write scratch or debug files there.\n"
             "- No network access. One shot per call (no state persists between calls).\n"
+            "**Anything your script prints to stdout is returned to you in the `stdout` field of "
+            "the result.** That is how you inspect a file: `print()` the header row, the column "
+            "names, the row count, a sample of the data — whatever you need to see — and read it "
+            "back in the tool result. Do NOT write debug files to OUTPUT_DIR to inspect them; you "
+            "cannot read files back, only stdout. Keep prints purposeful (output is trimmed at "
+            f"~{MAX_OUTPUT_CHARS} characters).\n"
+            "Because you can inspect and act in the same script, prefer ONE call that inspects, "
+            "decides, writes the output file, and prints what it did — rather than a separate "
+            "look-first call. When a file's layout is genuinely unknown, one inspection call "
+            "followed by one call that does the work is the right shape.\n"
             "Optionally print a single final line of JSON like {\"summary\": \"...\"} to describe "
             "what you did; otherwise a generic summary is used."
         ),
@@ -332,6 +439,8 @@ def _run_local(code: str, input_path: str | None, staging, logger, environment: 
             summary="",
             artifacts=artifacts,  # surface partial outputs if any
             error=f"Script exited {proc.returncode}: {tail}",
+            # Whatever printed before the crash is often the whole diagnosis.
+            stdout=clip_output(stdout),
             work_dir=run_dir,
         )
 
@@ -343,7 +452,8 @@ def _run_local(code: str, input_path: str | None, staging, logger, environment: 
             summary = ""
     if not summary:
         summary = f"Ran custom code; produced {len(artifacts)} file(s)." if artifacts else "Ran custom code."
-    return ToolInvocationResult(status="ok", summary=summary, artifacts=artifacts, work_dir=run_dir)
+    return ToolInvocationResult(status="ok", summary=summary, artifacts=artifacts,
+                                stdout=clip_output(stdout), work_dir=run_dir)
 
 
 def _lambda_function_name(environment: str) -> str:
@@ -457,8 +567,11 @@ def _run_lambda(code: str, input_key: str | None, staging, logger, environment: 
         return ToolInvocationResult.err(f"Unparseable sandbox response: {body[:500]}", work_dir=out_prefix)
     if resp.get("FunctionError"):
         return ToolInvocationResult.err(f"Sandbox raised: {raw}", work_dir=out_prefix)
+    # `stdout` is absent on a handler older than 2026-09-08; clip_output(None) -> None, so the
+    # model simply gets no stdout key rather than an error.
     return ToolInvocationResult(status=raw.get("status", "error"), summary=raw.get("summary", ""),
-                                artifacts=raw.get("artifacts") or [], error=raw.get("error"), work_dir=out_prefix)
+                                artifacts=raw.get("artifacts") or [], error=raw.get("error"),
+                                stdout=clip_output(raw.get("stdout")), work_dir=out_prefix)
 
 
 # --- the attached file must keep its extension ------------------------------------------
@@ -533,6 +646,20 @@ def run_code(tool_input: dict, staging, logger, notify=None) -> ToolInvocationRe
         if staged is None:
             return ToolInvocationResult.err(
                 f"No attached file with handle {handle!r}. Available: {sorted(staging.by_handle()) or 'none'}."
+            )
+        # Backstop for the capability note above: if the model reaches for a format nothing here
+        # can open, say so on the FIRST call with the answer already in hand, rather than letting
+        # it probe for a missing engine one import at a time. Costs one step instead of a turn.
+        unreadable = UNREADABLE_FORMATS.get(_ext(staged.filename))
+        if unreadable:
+            what, ask = unreadable
+            logger.info("run_code: refusing unreadable format %s (%s)", _ext(staged.filename), handle)
+            return ToolInvocationResult.err(
+                f"{staged.filename!r} is {what}, and NOTHING in this sandbox can read it — not "
+                f"openpyxl, not pandas, not any engine you might import. There is no network, so "
+                f"nothing can be installed either. Do not try another library or another approach: "
+                f"the answer will not change. Use the `ask_user` tool now to tell the teammate this "
+                f"format can't be read and to ask them to {ask}."
             )
         input_path = staged.ref
         prelude = _input_extension_prelude(staged.filename)

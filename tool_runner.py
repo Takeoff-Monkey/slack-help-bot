@@ -134,15 +134,24 @@ class ToolInvocationResult:
     artifacts: list = field(default_factory=list)   # [{kind, ref, filename, title}]
     error: str | None = None
     work_dir: str | None = None       # local dir | S3 prefix — for cleanup, never shown to model
+    # Whatever the code printed. This is the model's ONLY way to look at a file it was given:
+    # without it, `run_code` answered every inspection script with "Ran custom code." and the
+    # model burned most of its step budget rediscovering that it was flying blind — writing
+    # debug files into OUTPUT_DIR (which just uploaded junk to the thread) and finally smuggling
+    # data out through the summary line. See model_view below.
+    stdout: str | None = None
 
     def model_view(self) -> dict:
         """What the model sees in the tool_result — strips filesystem/S3 refs."""
-        return {
+        view = {
             "status": self.status,
             "summary": self.summary,
             "artifacts": [{k: v for k, v in a.items() if k != "ref"} for a in self.artifacts],
             "error": self.error,
         }
+        if self.stdout:
+            view["stdout"] = self.stdout
+        return view
 
     @classmethod
     def err(cls, message: str, work_dir: str | None = None) -> "ToolInvocationResult":

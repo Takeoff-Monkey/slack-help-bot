@@ -27,7 +27,15 @@ import tool_registry
 import tool_runner
 
 ACTION_MODEL = os.environ.get("ACTION_MODEL", "claude-sonnet-5")
-MAX_TOOL_ITERATIONS = int(os.environ.get("MAX_TOOL_ITERATIONS", "6"))
+# A "step" is one model call, not one tool call — so this is the total number of times the model
+# gets to think this turn. 6 was sized for the happy path (call the one right tool, report back)
+# and was far too tight for real `run_code` work: inspect a sheet, work out its layout, transform
+# it, write the workbook. A dedupe request spent all six steps looking at the file and ran out
+# before it could write anything. Each step is a couple of seconds plus its tool, so the ceiling
+# is about protecting against a runaway loop, not about rationing ordinary work.
+MAX_TOOL_ITERATIONS = int(os.environ.get("MAX_TOOL_ITERATIONS", "14"))
+# When this few steps remain, tell the model to stop exploring and produce the deliverable.
+ENDGAME_STEPS = int(os.environ.get("AGENT_ENDGAME_STEPS", "3"))
 MAX_TOKENS = 2048
 # Per-request cap on a model call. The SDK's default read timeout is 600s, so a wedged
 # request used to mean ten minutes of an unchanging "Thinking…" placeholder (times the
@@ -89,10 +97,16 @@ Tell the user what you're doing:
 - Before you call ANY tool, first write ONE short, friendly sentence saying what you're about to do and on which file — e.g. "On it — running the Schedule Extractor on that PDF now." Then make the tool call in the SAME turn. This lets the user see what's happening and stop you if it's not what they wanted.
 
 Core rule — do exactly what was asked, then stop:
-- Most requests are satisfied by ONE tool call. Pick the single registered tool that matches the request, call it once, and when it returns status "ok" you are DONE.
-- Do NOT call more tools to double-check, re-run, reformat, validate, or "improve" a result that already succeeded. A successful tool result IS the finished work. (The one exception is escalating poor-quality OCR — see below.)
+- When a *registered tool* matches the request, that is usually ONE call. Pick the tool, call it once, and when it returns status "ok" you are DONE.
+- Do NOT call more tools to double-check, re-run, reformat, validate, or "improve" a registered tool's result that already succeeded. A successful tool result IS the finished work. (Exceptions: escalating poor-quality OCR, and `run_code` work — both below.)
 - Only take an additional step if the user EXPLICITLY asked for a separate operation that the tool did not perform (e.g. "extract the schedules AND highlight every 'landscape'"). If they didn't ask for it, don't do it.
 - Use `run_code` ONLY when no registered tool covers what the user explicitly asked for. Never use it to post-process a tool's output unless the user requested that post-processing.
+
+Working with `run_code` — inspect, then act, and always finish the job:
+- `run_code` work is legitimately more than one call: you often cannot know a file's layout until you look at it. Looking first and then doing the work is correct here, and is NOT the "don't re-run a succeeded result" case above.
+- Everything your script prints comes back to you in the result's `stdout`. That is how you look inside a file — print the header row, column names, row count, a data sample. You cannot read files back, so never write a debug file to inspect it.
+- Budget your calls: aim for one inspection call and then one call that does the work. Combine steps whenever you can — a single script can inspect, decide, write the output file, and print what it did.
+- Finish. An inspection that identifies what needs doing is NOT the deliverable; the produced file is. Never end a turn having only worked out what you were going to do — if you have looked at the file and know the answer, write the output in your very next call.
 
 OCR & scanned images:
 - If a user attaches an image (PNG/JPG) or a scanned / text-less PDF and wants its text or tables, a registered tool may not fit — use `run_code`. Start in the "default" environment: preprocess with `cv2` (grayscale, upscale, threshold) and read with `pytesseract` (Tesseract).
@@ -103,7 +117,15 @@ Files & output:
 - Attached files are listed with handles like `file_1`. Pass those handles to a tool's `input_file` field. In `run_code`, the file you name is at env `INPUT_FILE`, and anything you write to env `OUTPUT_DIR` is uploaded to the thread automatically.
 - A *Routing note* in the conversation comes from a tool's own trigger rules (a filename pattern, a phrase in the request). Follow it: use the tool it names, or — when it says the tool needs a file that isn't attached — stop and ask for the file with `ask_user` instead of starting anything.
 - Every file a tool or `run_code` produces is uploaded to the Slack thread for the user automatically. Never re-create, re-deliver, or tell the user where to find a file.
+- `OUTPUT_DIR` is for finished deliverables ONLY. Never write scratch, debug, or intermediate files there — they get uploaded to the user's thread as if they were the work. Use `print()` for anything you just want to see yourself.
 - When finished, reply with one or two plain sentences summarizing what you did. Do NOT paste raw tool JSON.
+
+Deliver results as a FILE — a spreadsheet by default:
+- Any result that is data — rows, tables, lists, extracted values, filtered or cleaned records, counts, comparisons — is delivered as a *spreadsheet file* (`.xlsx`, written to `OUTPUT_DIR`). That is the default output format for this bot, always, unless the user explicitly asked for something else (a PDF, a Word doc, a CSV, or "just tell me in the thread").
+- Never paste the results into your Slack reply as a code block, a table, or a long list. Teammates need to open the output in Excel, not copy it out of chat. Your reply describes the work in a sentence or two; the file carries the data.
+- This applies to partial work too. If you can only finish part of it, still write what you have to a spreadsheet and say plainly what's missing — do not paste partial results as text instead.
+- Preserve the source layout when you're transforming a workbook the user gave you: same columns, same order, same headers, so the output drops straight into their process. Keep the original filename with a short suffix (e.g. "… - cleaned.xlsx").
+- Editing a workbook means writing a NEW file to `OUTPUT_DIR`. Never modify the user's original in place.
 
 Errors:
 - If a tool returns an error, you may retry ONCE with corrected inputs, or explain the problem plainly. Do not keep retrying or switch to `run_code` to brute-force around a failure.
@@ -265,7 +287,10 @@ def run_agent(client, question, history, staging, tool_specs, reporter, on_artif
     # Tool-declared triggers (tool.json "triggers") -> a routing note: "this attachment's name
     # says it's for tool X", or "this request needs a file and none is attached, so ask".
     routing = tool_registry.routing_note(tool_specs, question, staging.files if staging else [])
-    user_turn = "\n\n".join(part for part in (question, attach_note, routing) if part)
+    # Deterministic up-front check: an attachment in a format nothing here can open. Said now,
+    # in one sentence, instead of discovered over five failed calls (see sandbox.capability_note).
+    capability = sandbox.capability_note(staging.files if staging else [])
+    user_turn = "\n\n".join(part for part in (question, attach_note, routing, capability) if part)
     messages = _normalize(list(history) + [{"role": "user", "content": user_turn}])
 
     artifacts: list = []
@@ -273,10 +298,14 @@ def run_agent(client, question, history, staging, tool_specs, reporter, on_artif
     last_error: str | None = None       # so a silent wrap-up can still explain what went wrong
     used_a_tool = False                 # did anything actually happen this turn?
     nudged = False                      # we only ever poke the model once (see below)
+    endgame_warned = False              # told it once that the steps are running out
     trace: list = [f"USER: {question!r} | files={[f.handle for f in staging.files]}"]
     if routing:
         trace.append(f"ROUTING: {routing}")
         logger.info("agent: routing note | %s", _short(routing, 200))
+    if capability:
+        trace.append(f"CAPABILITY: {capability}")
+        logger.info("agent: capability note | %s", _short(capability, 200))
 
     def emit(arts):
         """Accumulate + immediately upload artifacts a tool just produced."""
@@ -456,6 +485,24 @@ def run_agent(client, question, history, staging, tool_specs, reporter, on_artif
             })
         messages.append({"role": "user", "content": tool_results})
 
+        # Running low on steps. The failure this prevents: the model spends its budget happily
+        # exploring a file, hits the cap, and the user gets a description of the work instead of
+        # the work. Warn it once, in the conversation itself (a system-prompt line is too far
+        # away to compete with whatever it's mid-way through), so it spends what's left writing
+        # the output file rather than learning more about the input.
+        remaining = MAX_TOOL_ITERATIONS - (step + 1)
+        if 0 < remaining <= ENDGAME_STEPS and not endgame_warned:
+            endgame_warned = True
+            trace.append(f"ENDGAME[{step + 1}]: {remaining} step(s) left")
+            logger.info("agent: %d step(s) left; telling the model to land it", remaining)
+            _append_user_text(messages, (
+                f"You have {remaining} step(s) left this turn, then you are cut off. Stop "
+                f"investigating and produce the deliverable NOW: write the output file to "
+                f"OUTPUT_DIR with your next call, using what you already know. A partial file "
+                f"the user can open beats a complete explanation of what you would have done. "
+                f"If you truly cannot produce anything, say so plainly instead."
+            ))
+
     # Hit the iteration cap — one no-tools wrap-up turn for a coherent reply.
     if cancel_event.is_set():
         return cancelled_result()
@@ -472,7 +519,9 @@ def run_agent(client, question, history, staging, tool_specs, reporter, on_artif
         "You have used every step you had. Nothing further will run this turn, so do NOT "
         "describe what you will do next — there is no next. Report to the user, briefly and "
         "plainly: what they asked for, what you tried, what went wrong each time, and what "
-        "they could do now."
+        "they could do now. Keep it to a few sentences, and do NOT dump the work into your "
+        "reply as a code block, table, or long list — results belong in a file, and no file "
+        "can be produced now. Describe what you found; don't paste it."
     ))
     header = f":warning: I ran out of steps before I could finish this.{delivered}"
     try:

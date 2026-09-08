@@ -11,6 +11,12 @@ PyMuPDF                   # fitz — read/rasterize/edit PDFs
 pandas                    # tabular data (pulls in numpy, which is also available directly)
 Pillow                   # PIL — image IO/manipulation
 openpyxl                 # read/write .xlsx
+xlrd                     # read LEGACY .xls (BIFF). openpyxl handles ONLY .xlsx/.xlsm, and
+                         #   pandas.read_excel needs this engine for .xls — without it a .xls
+                         #   attachment was unreadable by every library here, and with no
+                         #   network there was no way to recover. Teammates still export .xls
+                         #   from older takeoff software, so this is a real input format.
+                         #   (xlrd 2.x reads .xls only — that's deliberate; .xlsx is openpyxl's.)
 
 # --- OCR + image preprocessing (raster files with no text layer) ---
 pytesseract              # Tesseract OCR wrapper — needs the `tesseract` system binary

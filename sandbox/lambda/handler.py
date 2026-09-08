@@ -111,13 +111,16 @@ def handler(event, context):
             ext = name.rsplit(".", 1)[-1].lower() if "." in name else "bin"
             artifacts.append({"kind": ext, "ref": key, "filename": name, "title": name})
 
+        out = (proc.stdout or "").strip()
+
         if proc.returncode != 0:
-            tail = (proc.stderr or proc.stdout or "").strip()[-MAX_OUTPUT_CHARS:]
+            tail = (proc.stderr or out or "").strip()[-MAX_OUTPUT_CHARS:]
             return {"status": "error", "summary": "", "artifacts": artifacts,
-                    "error": f"Script exited {proc.returncode}: {tail}"}
+                    "error": f"Script exited {proc.returncode}: {tail}",
+                    # Whatever printed before the crash is often the whole diagnosis.
+                    "stdout": _clip(out)}
 
         summary = ""
-        out = (proc.stdout or "").strip()
         if out:
             try:
                 summary = (json.loads(out.splitlines()[-1]) or {}).get("summary", "")
@@ -125,13 +128,31 @@ def handler(event, context):
                 summary = ""
         if not summary:
             summary = f"Ran custom code; produced {len(artifacts)} file(s)." if artifacts else "Ran custom code."
-        return {"status": "ok", "summary": summary, "artifacts": artifacts, "error": None}
+        # Return what the script printed. Previously stdout was thrown away unless its LAST line
+        # happened to be JSON with a "summary" key, so an inspection script came back as the
+        # useless "Ran custom code." — the model could not see inside a file it had been given,
+        # and spent its step budget working around that instead of doing the job.
+        return {"status": "ok", "summary": summary, "artifacts": artifacts, "error": None,
+                "stdout": _clip(out)}
 
     except subprocess.TimeoutExpired:
         return _err(f"Code timed out after {TIMEOUT}s.")
     except Exception as err:
         traceback.print_exc()
         return _err(f"{type(err).__name__}: {err}")
+
+
+def _clip(text):
+    """Trim printed output, keeping BOTH ends — an inspection dump's header row matters as much
+    as its last line."""
+    if not text:
+        return None
+    if len(text) <= MAX_OUTPUT_CHARS:
+        return text
+    head = MAX_OUTPUT_CHARS * 2 // 3
+    tail = MAX_OUTPUT_CHARS - head
+    return (f"{text[:head]}\n\n…[{len(text) - MAX_OUTPUT_CHARS} characters trimmed from the "
+            f"middle]…\n\n{text[-tail:]}")
 
 
 def _err(message: str) -> dict:

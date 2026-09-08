@@ -10,7 +10,7 @@ There are **four Python environments** and they never mix:
 |---|---|---|---|
 | **Bot** | repo root (`./.venv` locally, the Heroku dyno in prod) | `requirements.txt` | anthropic, slack-bolt, **boto3** — light |
 | **Tool** | `tools/schedule-extractor/.venv` | `tools/schedule-extractor/setup.sh` | PyMuPDF, pandas, textract — heavy |
-| **Sandbox (default)** | `sandbox/.venv` | `sandbox/setup.sh` | Tesseract OCR + opencv + PDF/data/doc libs (extended toolkit) |
+| **Sandbox (default)** | `sandbox/.venv` | `sandbox/setup.sh` | Tesseract OCR + opencv + PDF/data/doc libs (extended toolkit), incl. `openpyxl` (.xlsx) **and `xlrd` (legacy .xls)** |
 | **Sandbox (neural OCR)** | `sandbox/.venv-ocr` | `sandbox/setup.sh` | above **+** RapidOCR (`rapidocr-onnxruntime` + onnxruntime, offline models) |
 
 > `sandbox/setup.sh` builds **both** sandbox venvs and warns if the `tesseract`/`pdftoppm` system
@@ -246,4 +246,16 @@ been quiet, and a guarantee that the message never stays on "Thinking…".
 | `ANTHROPIC_TIMEOUT_SECONDS` | `120` | Per-request cap on model calls (the SDK default is 600s, which meant up to half an hour of frozen hourglass). |
 | `ANTHROPIC_MAX_RETRIES` | `2` | SDK-level retries for those calls. |
 | `ACTION_MODEL_TIMEOUT_SECONDS` | `120` | Same cap, applied per request inside the tool-use loop. |
+| `MAX_TOOL_ITERATIONS` | `14` | Model calls allowed per action turn. Was `6`, which was too tight for `run_code` work (inspect a sheet, transform it, write the workbook) — turns ran out of steps before producing a file. Lower it only to rein in a runaway loop. |
+| `AGENT_ENDGAME_STEPS` | `3` | With this many steps left, the bot is told to stop investigating and write the output file now. |
+
+### Unreadable attachment formats
+
+`sandbox.UNREADABLE_FORMATS` lists formats no library in the toolkit can open (legacy `.doc`/
+`.ppt`/`.xlsb`, OpenDocument, iWork, `.rtf`, `.heic`, CAD/BIM, `.rar`/`.7z`). When one is
+attached the bot is told up front, in its first move, to `ask_user` for a format it can read —
+and `run_code` refuses that file outright as a backstop. This replaced a turn that spent all
+six of its steps probing for a missing `.xls` engine before asking for a re-upload. **Keep the
+table honest:** listing something readable makes the bot refuse work it could have done, so add
+an entry only when nothing in `sandbox/requirements.txt` can open the format.
 | `BOLT_LISTENER_THREADS` | `16` | Concurrent Slack turns. Bolt's default of 5 meant the 6th simultaneous request got no reply at all. |
