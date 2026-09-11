@@ -30,6 +30,6 @@
         - ~~container~~
         - ~~b&b~~
         - ~~if 2 or more exist, they need to be listed w/ a '/' between (both listed in 'Package')~~
-    - **DON'T DO NOW, LATER FEATURE**: ~~the last column at the end called 'column1' needs to be filled w/ scraped data from the 'QTY' column on the attached schedule~~
-        - ~~when the user sends in an Arazoza job request, there should be a schedule (or schedules) along with the worksheet file you're modifying~~
-        - ~~these schedules will be images, the names corresponding to ~~
+    - **DON'T DO NOW, LATER FEATURE**: the last column at the end called 'column1' needs to be filled w/ scraped data from the 'QTY' column on the attached schedule
+        - when the user sends in an Arazoza job request, there should be a schedule (or schedules) along with the worksheet file you're modifying
+        - these schedules will be images, the names corresponding to 

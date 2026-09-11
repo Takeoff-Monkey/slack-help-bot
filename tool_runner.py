@@ -159,23 +159,45 @@ class ToolInvocationResult:
 
 
 def _resolve_input(spec, tool_input: dict, by_handle: dict):
-    """Resolve the input_file handle to a StagedFile and validate the accepted type.
-    Returns (staged, error_message)."""
-    handle = tool_input.get("input_file")
-    if handle is None:
-        # Tool declared input_file required (manifest) but model omitted it.
-        if "input_file" in (spec.input_schema.get("required") or []):
-            return None, "Missing required 'input_file' handle."
-        return None, None
-    staged = by_handle.get(handle)
-    if staged is None:
-        return None, f"No attached file with handle {handle!r}. Available: {sorted(by_handle) or 'none'}."
+    """Resolve the call's file handles to StagedFiles and validate the accepted types.
+    Returns (staged_files, error_message) — a one-file tool gets a single-element list.
+
+    Two spellings are accepted: most tools take exactly one file and declare `input_file`,
+    while a tool whose job spans several attachments (schedule-extractor over a set of
+    schedule photos) declares `input_files`. Taking either from any tool means the model
+    never has to remember which one spells it which way; `accepts.max_files` is what
+    actually caps how many a tool will run on.
+    """
+    handles = tool_input.get("input_files") or []
+    if isinstance(handles, str):     # model wrote a bare handle where an array was declared
+        handles = [handles]
+    if tool_input.get("input_file"):
+        handles = [tool_input["input_file"], *handles]
+    handles = list(dict.fromkeys(h for h in handles if h))     # de-dupe, keep the given order
+    if not handles:
+        # Tool declared a file required (manifest) but the model omitted it.
+        required = set(spec.input_schema.get("required") or [])
+        if required & {"input_file", "input_files"}:
+            return None, "Missing required file handle ('input_file' / 'input_files')."
+        return [], None
+    max_files = (spec.accepts or {}).get("max_files") or 1
+    if len(handles) > max_files:
+        return None, (
+            f"{spec.name} takes at most {max_files} file(s) per call, but {len(handles)} were "
+            f"given. Run it on fewer files, or split the work across separate calls."
+        )
     allowed = [t.lower() for t in (spec.accepts or {}).get("file_types", [])]
-    if allowed:
-        ext = staged.filename.rsplit(".", 1)[-1].lower() if "." in staged.filename else ""
-        if ext not in allowed:
-            return None, f"{staged.filename!r} is not an accepted type for {spec.name} (needs {allowed})."
-    return staged, None
+    staged_files = []
+    for handle in handles:
+        staged = by_handle.get(handle)
+        if staged is None:
+            return None, f"No attached file with handle {handle!r}. Available: {sorted(by_handle) or 'none'}."
+        if allowed:
+            ext = staged.filename.rsplit(".", 1)[-1].lower() if "." in staged.filename else ""
+            if ext not in allowed:
+                return None, f"{staged.filename!r} is not an accepted type for {spec.name} (needs {allowed})."
+        staged_files.append(staged)
+    return staged_files, None
 
 
 def _local_work_dir(staging) -> str:
@@ -199,7 +221,11 @@ class LocalSubprocessBackend:
         cmd = (spec.entrypoint.get("local") or {}).get("cmd") or ["run.py"]
         contract = {
             "input": tool_input,
-            "input_path": staged.ref if staged else None,
+            # input_path is the first (for most tools, the only) file; input_paths is every
+            # file this call resolved, for the tools that accept more than one. Both are
+            # always sent, so a single-file tool needs no change to keep working.
+            "input_path": staged[0].ref if staged else None,
+            "input_paths": [f.ref for f in staged],
             "work_dir": work_dir,
             "backend": "local",
         }
@@ -226,9 +252,10 @@ class LambdaBackend:
             return ToolInvocationResult.err(f"{spec.name} has no lambda.function_name in its manifest.", work_dir=work_dir)
         payload = {
             "input": tool_input,
-            "input_path": staged.ref if staged else None,   # S3 key
-            "work_dir": work_dir,                            # S3 output prefix
-            "bucket": slack_files.SCRATCH_S3_BUCKET,         # shared scratch bucket
+            "input_path": staged[0].ref if staged else None,  # S3 key of the first file
+            "input_paths": [f.ref for f in staged],           # every file this call resolved
+            "work_dir": work_dir,                             # S3 output prefix
+            "bucket": slack_files.SCRATCH_S3_BUCKET,          # shared scratch bucket
             "backend": "lambda",
         }
         try:

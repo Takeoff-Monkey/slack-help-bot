@@ -39,6 +39,7 @@ import canvas_knowledge
 # code fallback on user-attached files, in addition to answering questions.
 import agent_loop
 import slack_files
+import slack_mcp
 import status
 import tasks
 import tool_registry
@@ -178,6 +179,21 @@ TOOLS_FOR_SELECTOR = "\n".join(
 ) or "(none registered)"
 
 
+# Only offered to the selector when the connector is actually configured — asking a model to
+# classify for a capability the bot hasn't got just produces answers that cite a search it
+# never ran. Same reason the schema below grows a field only in that case.
+SELECTOR_SLACK_SECTION = """
+3) SLACK LOOKUP — set needs_slack=true when answering well would mean looking inside the Slack
+   workspace itself rather than the documentation: anything time-bound or conversational ("when
+   did I send the login for X", "who set this up", "what did we decide about Y", "did anyone hit
+   this before"), anything about a person's own past messages or files, or a topic none of the
+   skills below plainly covers so the answer is likelier to be in a thread, a canvas, or a doc
+   saved in Slack. Set it false when a listed skill clearly covers the question, when the message
+   is conversational ("hi", "thanks", "what can you do"), or when it's an action on a file.
+   Searching costs a few seconds, so lean false when a skill already answers it — but lean TRUE
+   whenever the skills look thin for what's being asked."""
+
+
 SELECTOR_SYSTEM = f"""You help an AI Slack bot triage a teammate's LATEST message in two ways.
 
 1) INTENT — classify what they want:
@@ -188,7 +204,7 @@ SELECTOR_SYSTEM = f"""You help an AI Slack bot triage a teammate's LATEST messag
 {TOOLS_FOR_SELECTOR}
 
 2) SKILLS — pick at most {MAX_SKILLS_PER_QUESTION} skill IDs from the list below that are directly relevant to the LATEST message (used when intent is "qa"; for "action" an empty list is fine). Each skill describes a system, automation, lambda, board automation, or tool, and the bot reads the full HTML for whichever you pick. Use prior turns as context for follow-ups like "what's wrong with it?". If the message is conversational, generic, or unrelated to the tech stack (e.g. "hi", "what can you do"), return an empty skill list.
-
+{SELECTOR_SLACK_SECTION if slack_mcp.available() else ""}
 Available skills:
 {INDEX_JSON}"""
 
@@ -317,34 +333,38 @@ def selector_system_blocks() -> list[dict]:
     return blocks
 
 
-def _run_selector(question: str, history: list[dict]) -> tuple[str, list[str]]:
-    """One Haiku call that both classifies intent and picks skills. Returns
-    (intent, skill_ids) where intent is "qa" or "action". The bot reuses this single call
-    for routing (action vs Q&A) and for retrieval, so a normal Q&A turn still costs one
-    selector call."""
+def _selector_schema() -> dict:
+    """The selector's output shape. `needs_slack` only exists when the Slack MCP connector
+    is configured, so the model is never asked to route to a capability the bot lacks."""
+    properties = {
+        "intent": {"type": "string", "enum": ["qa", "action"]},
+        "skill_ids": {"type": "array", "items": {"type": "string"}},
+    }
+    required = ["intent", "skill_ids"]
+    if slack_mcp.available():
+        properties["needs_slack"] = {"type": "boolean"}
+        required.append("needs_slack")
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": False,
+    }
+
+
+def _run_selector(question: str, history: list[dict]) -> tuple[str, list[str], bool]:
+    """One Haiku call that classifies intent, picks skills, and (when the Slack MCP
+    connector is configured) says whether the answer needs a look inside Slack itself.
+    Returns (intent, skill_ids, needs_slack) where intent is "qa" or "action". The bot
+    reuses this single call for routing and for retrieval, so a normal Q&A turn still
+    costs one selector call."""
     messages = normalize_message_history(history + [{"role": "user", "content": question}])
     response = anthropic_client.messages.create(
         model=SELECTOR_MODEL,
         max_tokens=512,
         system=selector_system_blocks(),
         messages=messages,
-        output_config={
-            "format": {
-                "type": "json_schema",
-                "schema": {
-                    "type": "object",
-                    "properties": {
-                        "intent": {"type": "string", "enum": ["qa", "action"]},
-                        "skill_ids": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                        },
-                    },
-                    "required": ["intent", "skill_ids"],
-                    "additionalProperties": False,
-                },
-            }
-        },
+        output_config={"format": {"type": "json_schema", "schema": _selector_schema()}},
     )
     text = next(b.text for b in response.content if b.type == "text")
     payload = json.loads(text)
@@ -352,14 +372,83 @@ def _run_selector(question: str, history: list[dict]) -> tuple[str, list[str]]:
     picked = payload.get("skill_ids", [])
     allowed = VALID_SKILL_IDS | canvas_knowledge.valid_ids()
     valid = [sid for sid in picked if sid in allowed][:MAX_SKILLS_PER_QUESTION]
-    return intent, valid
+    return intent, valid, bool(payload.get("needs_slack"))
 
 
 def select_skills(question: str, history: list[dict]) -> list[str]:
     return _run_selector(question, history)[1]
 
 
-def answer_question(question: str, skill_ids: list[str], history: list[dict]) -> str:
+# A `pause_turn` means the server-side MCP tools hit their own iteration limit mid-answer;
+# we resend to let it carry on. Two continuations is plenty for a lookup — past that it's
+# searching in circles and should say so rather than keep spending the user's time.
+MAX_MCP_CONTINUATIONS = int(os.environ.get("SLACK_MCP_MAX_CONTINUATIONS", "2"))
+# The Slack-search answer has to fit its thinking and its tool round-trips into one budget,
+# so it gets more room than the plain retrieval answer's 2048.
+MCP_ANSWER_MAX_TOKENS = int(os.environ.get("SLACK_MCP_ANSWER_MAX_TOKENS", "4096"))
+
+
+def _answer_with_slack(system: str, messages: list[dict], mcp, logger) -> tuple[object | None, list[str]]:
+    """The answer call with Slack's MCP server attached. Anthropic opens the connection and
+    runs the tool calls server-side, so there's no client-side tool loop here — only the
+    `pause_turn` continuation, and the assistant turn must be appended verbatim (thinking
+    blocks included) for the model to pick up where it left off.
+
+    Thinking is left on here, unlike the plain retrieval call: this one decides whether and
+    what to search, and a search-then-synthesise turn is exactly the shape that goes wrong
+    with thinking disabled (a tool call written out as prose instead of actually made).
+
+    Returns (final_message, tool_names), or (None, []) if Slack search was unreachable —
+    which is the caller's cue to answer from the documentation alone.
+    """
+    used: list[str] = []
+    convo = list(messages)
+    final = None
+    for attempt in range(MAX_MCP_CONTINUATIONS + 1):
+        try:
+            with anthropic_client.beta.messages.stream(
+                model=ANSWER_MODEL,
+                max_tokens=MCP_ANSWER_MAX_TOKENS,
+                thinking={"type": "adaptive"},
+                output_config={"effort": "medium"},
+                betas=mcp.betas,
+                mcp_servers=mcp.mcp_servers,
+                tools=mcp.tools,
+                system=system,
+                messages=convo,
+            ) as stream:
+                final = stream.get_final_message()
+        except anthropic.APIStatusError as err:
+            # A token Slack rejects fails the whole call, answer and all. The question is
+            # still answerable from the docs, so give up on the search rather than the turn.
+            if not slack_mcp.is_connection_error(err):
+                raise
+            slack_mcp.pause(f"{type(err).__name__}: {err}")
+            logger.warning("slack-mcp: search unavailable, answering from the docs instead")
+            # Drop the names too: the answer about to be written is the docs-only one, so
+            # crediting "Slack search" in its Sources footer would be a lie.
+            return None, []
+        called = slack_mcp.tools_used(final)
+        used.extend(called)
+        if called:
+            # The only place the tool names ever surface — Slack doesn't publish them and the
+            # calls happen on Anthropic's side. Read these off the logs to build an allowlist.
+            logger.info("slack-mcp: called %s (as %s token)", ", ".join(called), mcp.token_source)
+        if final.stop_reason != "pause_turn":
+            return final, used
+        logger.info("slack-mcp: pause_turn after %d call(s); continuing (%d/%d)",
+                    len(used), attempt + 1, MAX_MCP_CONTINUATIONS)
+        convo.append({"role": "assistant", "content": final.content})
+    logger.warning("slack-mcp: still paused after %d continuations; answering with what it has",
+                   MAX_MCP_CONTINUATIONS)
+    return final, used
+
+
+def answer_question(question: str, skill_ids: list[str], history: list[dict],
+                    mcp=None, in_dm: bool = False, logger=None) -> tuple[str, list[str]]:
+    """Returns (answer_text, slack_tools_used). The second half is empty on the plain
+    retrieval path and drives the "Slack search" entry in the Sources footer."""
+    logger = logger or logging.getLogger(__name__)
     if skill_ids:
         bodies = []
         for sid in skill_ids:
@@ -382,24 +471,42 @@ def answer_question(question: str, skill_ids: list[str], history: list[dict]) ->
         history + [{"role": "user", "content": current_user_message}]
     )
 
-    with anthropic_client.messages.stream(
-        model=ANSWER_MODEL,
-        max_tokens=2048,
-        thinking={"type": "disabled"},
-        output_config={"effort": "medium"},
-        system=ANSWER_SYSTEM,
-        messages=messages,
-    ) as stream:
-        final = stream.get_final_message()
+    used: list[str] = []
+    final = None
+    slack_unavailable = False
+    if mcp is not None:
+        system = ANSWER_SYSTEM + "\n" + slack_mcp.guidance(in_dm=in_dm, own_token=mcp.own_token)
+        final, used = _answer_with_slack(system, messages, mcp, logger)
+        slack_unavailable = final is None
+    if final is None:
+        with anthropic_client.messages.stream(
+            model=ANSWER_MODEL,
+            max_tokens=2048,
+            thinking={"type": "disabled"},
+            output_config={"effort": "medium"},
+            system=ANSWER_SYSTEM,
+            messages=messages,
+        ) as stream:
+            final = stream.get_final_message()
 
-    for block in final.content:
-        if block.type == "text":
-            # A cut-off answer that looks complete is its own kind of silent failure.
-            if getattr(final, "stop_reason", None) == "max_tokens":
-                return block.text + "\n\n_(That got cut off — ask me to continue.)_"
-            return block.text
-    return (":warning: The model came back with nothing for that one — no answer and no error. "
-            "Try rephrasing it and I'll have another go.")
+    # With thinking on, the answer is the LAST text block, not the first — an earlier one can
+    # be the model narrating a search it's about to run. Take the last non-empty one.
+    answer = next((b.text for b in reversed(final.content) if b.type == "text" and b.text.strip()), None)
+    if answer is None:
+        if used:
+            # It searched and then said nothing — better to name that than to look broken.
+            return (":warning: I searched Slack for that but couldn't put an answer together. "
+                    "Try narrowing it down (a channel, a rough date, who was involved)?", used)
+        return (":warning: The model came back with nothing for that one — no answer and no error. "
+                "Try rephrasing it and I'll have another go.", used)
+    # A cut-off answer that looks complete is its own kind of silent failure.
+    if getattr(final, "stop_reason", None) == "max_tokens":
+        answer += "\n\n_(That got cut off — ask me to continue.)_"
+    if slack_unavailable:
+        # Say it, rather than quietly answering a narrower question than the one asked.
+        answer += ("\n\n_(I couldn't search Slack for this one, so that's from the docs only "
+                   "— the Slack connection may need reconnecting.)_")
+    return answer, used
 
 
 def _looks_like_action(question: str) -> bool:
@@ -462,12 +569,14 @@ def _is_cancel_request(question: str, logger) -> bool:
         return any(w in ql for w in _CANCEL_WORDS)
 
 
-def respond_to_question(question, history, staging, prefetched_skill_ids, reporter, on_artifacts, cancel_event, logger) -> "agent_loop.AgentResult":
+def respond_to_question(question, history, staging, prefetched_skill_ids, reporter, on_artifacts,
+                        cancel_event, logger, mcp=None, in_dm=False) -> "agent_loop.AgentResult":
     """Route a turn. When `staging` is not None we're on the *action* path (a file was
     attached, a tool was named, or the selector classified intent as "action") → run the
     tool-use loop. Otherwise it's the unchanged retrieval Q&A path, reusing the skills the
     caller already fetched (`prefetched_skill_ids`) so the selector isn't called twice.
     `on_artifacts` is the callback the loop fires to upload files the moment they're produced.
+    `mcp` is the Slack MCP connector for this turn, or None to answer from the docs alone.
     Always returns an AgentResult so the caller treats both paths uniformly."""
     question = question.strip()
     if not question and not (staging and staging.files):
@@ -478,7 +587,8 @@ def respond_to_question(question, history, staging, prefetched_skill_ids, report
     try:
         if staging is not None:
             return agent_loop.run_agent(
-                anthropic_client, question, history, staging, TOOLS, reporter, on_artifacts, cancel_event, logger
+                anthropic_client, question, history, staging, TOOLS, reporter, on_artifacts,
+                cancel_event, logger, mcp=mcp, in_dm=in_dm
             )
 
         if prefetched_skill_ids is None:
@@ -487,10 +597,16 @@ def respond_to_question(question, history, staging, prefetched_skill_ids, report
         else:
             skill_ids = prefetched_skill_ids
         logger.info(f"Selected skills: {skill_ids} (history turns: {len(history)})")
-        reporter.doing("reading the docs and writing your answer")
-        answer = answer_question(question, skill_ids, history)
-        if skill_ids:
+        reporter.doing("searching Slack and reading the docs" if mcp is not None
+                       else "reading the docs and writing your answer")
+        answer, slack_tools = answer_question(question, skill_ids, history,
+                                              mcp=mcp, in_dm=in_dm, logger=logger)
+        if skill_ids or slack_tools:
             source_fmts = []
+            if slack_tools:
+                # Named as its own source so nobody mistakes a colleague's year-old message
+                # for something out of the curated docs.
+                source_fmts.append("Slack search")
             for sid in skill_ids:
                 canvas_source = canvas_knowledge.get_source(sid)
                 if canvas_source:
@@ -554,7 +670,8 @@ def recent_thread_files(channel: str, thread_ts: str, logger) -> list[dict]:
     return []
 
 
-def reply_with_thinking_indicator(question, channel, thread_ts, files, history, say, client, logger):
+def reply_with_thinking_indicator(question, channel, thread_ts, files, history, say, client,
+                                  logger, user_id=None):
     """Post a 'Thinking…' placeholder, generate the reply, and narrate the work in between.
     On the action path that means short progress lines ("Running schedule-extractor…") and
     uploading produced files into the thread as they appear.
@@ -567,10 +684,12 @@ def reply_with_thinking_indicator(question, channel, thread_ts, files, history, 
     any exception outside the one try/except used to leave the bot looking busy for good.
     """
     with status.turn(channel, thread_ts, say, client, logger) as reporter:
-        _run_turn(question, channel, thread_ts, files, history, say, client, logger, reporter)
+        _run_turn(question, channel, thread_ts, files, history, say, client, logger, reporter,
+                  user_id)
 
 
-def _run_turn(question, channel, thread_ts, files, history, say, client, logger, reporter):
+def _run_turn(question, channel, thread_ts, files, history, say, client, logger, reporter,
+              user_id=None):
     """The turn itself. Anything that escapes here is caught and reported by status.turn(),
     so this body is free to `return` early without stranding the user."""
     # Register this run so a follow-up message on another thread can cancel it mid-task.
@@ -596,14 +715,26 @@ def _run_turn(question, channel, thread_ts, files, history, say, client, logger,
         # selector (the one call the Q&A path needs anyway) to classify intent, and reuse its
         # skill picks so it isn't called twice. staging stays None on the pure-Q&A path.
         prefetched_skills = None
+        needs_slack = False
         action = bool(files) or _looks_like_action(question)
         if not action and question.strip():
             reporter.doing("working out what you're asking for")
             try:
-                intent, prefetched_skills = _run_selector(question, history)
+                intent, prefetched_skills, needs_slack = _run_selector(question, history)
                 action = intent == "action"
             except Exception:
                 logger.exception("selector intent classification failed; defaulting to Q&A")
+
+        # The Slack MCP connector is attached only for the turns that asked for it. A request
+        # that names a tool and carries a file never reaches the selector, so a routine file
+        # job doesn't pay for a toolset it has no use for.
+        mcp = slack_mcp.build(user_id) if needs_slack else None
+        in_dm = str(channel).startswith("D")
+        if needs_slack and mcp is None:
+            logger.info("slack-mcp: wanted for this turn but no token for user %s — "
+                        "answering from the docs alone", user_id)
+        elif mcp is not None:
+            logger.info("slack-mcp: attached for user %s (%s token)", user_id, mcp.token_source)
 
         # On an action turn with no fresh attachment, reuse the file from earlier in the thread
         # so follow-ups ("now highlight 'landscape' in it") don't make the user re-upload.
@@ -632,7 +763,8 @@ def _run_turn(question, channel, thread_ts, files, history, say, client, logger,
                 return
 
         result = respond_to_question(
-            question, history, staging, prefetched_skills, reporter, emit_artifacts, cancel_event, logger
+            question, history, staging, prefetched_skills, reporter, emit_artifacts, cancel_event,
+            logger, mcp=mcp, in_dm=in_dm
         )
         # The Q&A path has no way to abandon a call mid-flight, so a "stop" during one used to
         # be acknowledged and then contradicted a second later by the answer landing anyway.
@@ -731,7 +863,7 @@ def handle_app_mention(event, say, client, logger):
         return
     history = get_conversation_history(channel, thread_ts, current_ts, logger)
     reply_with_thinking_indicator(
-        question, channel, thread_ts, files, history, say, client, logger
+        question, channel, thread_ts, files, history, say, client, logger, user_id
     )
 
 
@@ -765,7 +897,7 @@ def handle_message(event, say, client, logger):
         return
     history = get_conversation_history(channel, thread_ts, current_ts, logger)
     reply_with_thinking_indicator(
-        question, channel, thread_ts, files, history, say, client, logger
+        question, channel, thread_ts, files, history, say, client, logger, user_id
     )
 
 
@@ -795,6 +927,7 @@ if __name__ == "__main__":
         else "open mode (responds to everyone)"
     )
     print(f"Bot starting — {len(MANIFEST['skills'])} skills loaded, {mode}")
+    print(slack_mcp.status_line())
 
     # Live canvas knowledge: pull configured channels' canvas tabs in the
     # background so Slack stays the single source of truth. Inert unless

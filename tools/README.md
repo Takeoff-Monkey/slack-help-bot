@@ -72,10 +72,17 @@ manifest is logged and skipped — a broken tool never stops the bot from starti
 **Input** (stdin for local, event for lambda):
 ```json
 { "input": { "input_file": "file_1", "...": "..." },
-  "input_path": "<local path | S3 key>",
-  "work_dir":   "<local dir | S3 output prefix>",
-  "backend":    "local | lambda" }
+  "input_path":  "<local path | S3 key>",
+  "input_paths": ["<local path | S3 key>", "..."],
+  "work_dir":    "<local dir | S3 output prefix>",
+  "backend":     "local | lambda" }
 ```
+Most tools take exactly one file: they declare `input_file` in their schema and
+`accepts.max_files: 1`, and read `input_path`. A tool whose job spans several attachments
+(`schedule-extractor` over a set of schedule photos) declares an `input_files` array and a
+higher `max_files`, and reads `input_paths`. Both keys are always sent — `input_path` is the
+first file — so a single-file tool needs no change, and `tool_runner._resolve_input` accepts
+either spelling from the model and caps the count at `accepts.max_files`.
 **Output** (`work_dir/result.json` for local; returned payload for lambda):
 ```json
 { "status": "ok|error", "summary": "...",

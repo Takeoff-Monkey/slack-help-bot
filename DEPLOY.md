@@ -36,6 +36,100 @@ scratch bucket `help-bot-code-scratchpad`, Heroku app `slack-help-bot`.
 
 ---
 
+## Part 0b — Slack MCP: let the bot search the workspace (optional)
+
+This is what powers questions like *"when did I send the login for Arazoza?"* or *"how do
+I use the wall-height tool?"* when the answer is in a thread or a canvas rather than in
+`docs/skills/`. The bot doesn't speak MCP itself — it hands Slack's hosted MCP server
+(`https://mcp.slack.com/mcp`) to Anthropic's MCP connector, which runs the searches
+server-side inside the model call the bot was making anyway. Nothing to deploy; the whole
+feature is one env var.
+
+**Skip this part and nothing changes** — the bot answers from the skill docs exactly as it
+does today.
+
+### The catch: it needs a *user* token, not the bot token
+
+Slack's MCP server acts on behalf of a **person**, so it wants an `xoxp-…` user token. The
+bot's `xoxb-…` token is rejected. That means adding *user* scopes to the app and
+reinstalling — a step only someone with Slack admin rights can do.
+
+1. api.slack.com/apps → your app → **OAuth & Permissions** → *Scopes* → **User Token
+   Scopes** (the second table, not Bot Token Scopes). Add the read scopes:
+
+   ```
+   search:read.public   search:read.private   search:read.im    search:read.mpim
+   search:read.files    search:read.users     files:read        users:read
+   channels:read        channels:history      groups:read       groups:history
+   im:read              im:history            mpim:read         mpim:history
+   canvases:read
+   ```
+
+   **Grant read scopes only.** The scopes are the real security boundary here, not anything
+   in this repo: a token without `chat:write` *cannot* post as that person, however the model
+   is prompted. Add `chat:write` / `canvases:write` only if you later want the bot writing to
+   Slack as a user, and understand that you're handing an LLM that ability.
+2. Scroll up → **Reinstall to Workspace** → Allow. The page now shows a **User OAuth Token**
+   (`xoxp-…`) alongside the bot one. Copy it.
+3. Set it on the dyno:
+
+   ```bash
+   heroku config:set SLACK_MCP_USER_TOKEN=xoxp-... -a slack-help-bot
+   ```
+4. Confirm on startup — the boot log prints one line either way:
+
+   ```
+   Slack MCP: on (https://mcp.slack.com/mcp) | shared fallback token
+   ```
+
+### Whose Slack does it search? (read this before step 3)
+
+`SLACK_MCP_USER_TOKEN` is a **single shared token**: every teammate's question is searched
+as whoever installed it. So the bot can find — and quote — a private channel or DM the
+person asking has no access to. On a small team where everything is shared anyway that's
+usually fine, and the bot is prompted to check that what it found is somewhere the asker can
+plainly reach before quoting it. **That prompt is a courtesy, not a control.** If it matters,
+give people their own tokens instead:
+
+```bash
+heroku config:set SLACK_MCP_USER_TOKENS='{"U01ABC":"xoxp-...","U02DEF":"xoxp-..."}' -a slack-help-bot
+```
+
+Each teammate installs the app themselves (same install link, their own consent screen) and
+their token goes in the map under their Slack user ID. Lookups then see exactly what that
+person can see and nothing more. The two can be combined: the map is checked first, and
+`SLACK_MCP_USER_TOKEN` catches anyone not in it. Set only the map and teammates without a
+token simply get docs-only answers.
+
+### Knobs
+
+| Var | Default | What it does |
+|---|---|---|
+| `SLACK_MCP_USER_TOKEN` | *(unset)* | Shared `xoxp-…` fallback. Unset ⇒ feature off. |
+| `SLACK_MCP_USER_TOKENS` | *(unset)* | JSON map of Slack user ID → their own `xoxp-…` token. Checked before the fallback. |
+| `SLACK_MCP_ENABLED` | *(unset)* | Set `0` to switch Slack search off without unsetting the tokens. |
+| `SLACK_MCP_URL` | `https://mcp.slack.com/mcp` | The MCP endpoint. |
+| `SLACK_MCP_ALLOWED_TOOLS` | *(unset)* | Comma-separated allowlist of MCP tool names; everything else is disabled. Off by default — scopes already do this job. Slack doesn't publish the tool names, but the bot logs each one it calls (`slack-mcp: called …`), so build the list from real logs. |
+| `SLACK_MCP_COOLDOWN_SECONDS` | `600` | After a token failure, how long to stop attaching the connector (see below). |
+| `SLACK_MCP_MAX_CONTINUATIONS` | `2` | How many times a single answer may resume after the server-side search hits its own call ceiling. |
+| `SLACK_MCP_ANSWER_MAX_TOKENS` | `4096` | Output budget for a Slack-search answer (the plain docs answer stays at 2048). |
+
+### When the token goes bad
+
+A token Slack rejects doesn't fail politely: Anthropic can't complete the handshake, so the
+**entire** model call comes back `400` — the answer dies with it, not just the search. The bot
+handles that rather than passing it on: it retries the same turn without the connector, tells
+the user the answer is docs-only, and parks the connector for `SLACK_MCP_COOLDOWN_SECONDS` so a
+revoked token doesn't burn a failed call on every question. The log says so plainly:
+
+```
+slack-mcp: disabling Slack search for 600s — … the user token is likely expired or revoked
+```
+
+If you see that repeatedly, reinstall the app (step 2) to reissue the token.
+
+---
+
 ## Part 1 — Prove it locally (`TOOL_BACKEND=local`)
 
 ```bash
@@ -214,9 +308,10 @@ heroku logs --tail -a slack-help-bot     # look for: Discovered tool 'schedule-e
 | Scratch bucket | `help-bot-code-scratchpad` (us-east-1) |
 | Tool Lambdas | `tm-tool-schedule-extractor`, `tm-tool-bid-scanner`, `tm-tool-wall-height-calculator`, `tm-tool-arazoza-formatter` — all deployed 2026-09-04 except schedule-extractor (see below) |
 | Sandbox Lambdas | `tm-sandbox-runcode` (default), `tm-sandbox-runcode-ocr` (neural OCR) — both deployed 2026-09-04 |
-| ⚠️ Known drift | `tm-tool-schedule-extractor` is still the 2026-06-12 image: it predates `ba18177` (schedule-keyword fix + Textract OCR fallback) and `2194d36` (arbitrary-script OCR, and the OpenAI→Anthropic cleanup migration, which renamed the template parameter `OpenAIApiKey`→`AnthropicApiKey`). Redeploy it when you're ready to supply/confirm that parameter. |
+| ⚠️ Known drift | `tm-tool-schedule-extractor` is still the 2026-06-12 image: it predates `ba18177` (schedule-keyword fix + Textract OCR fallback) and `2194d36` (arbitrary-script OCR, and the OpenAI→Anthropic cleanup migration, which renamed the template parameter `OpenAIApiKey`→`AnthropicApiKey`). Redeploy it when you're ready to supply/confirm that parameter. It also predates image input (schedules from photos/screenshots, several at once) — until it's redeployed, that only works on `TOOL_BACKEND=local`: `cd tools/schedule-extractor/lambda && SCRATCH_BUCKET=help-bot-code-scratchpad ./deploy.sh`. |
 | Heroku app | `slack-help-bot` |
 | New Slack scope | `files:write` (reinstall) |
+| Slack search (optional) | `SLACK_MCP_USER_TOKEN` — user token + user read scopes, see Part 0b |
 | Prod env vars | `TOOL_BACKEND=lambda`, `SCRATCH_S3_BUCKET`, `AWS_*` |
 
 ### Cold-start tuning (optional — sane defaults, only set to override)

@@ -23,6 +23,7 @@ import anthropic
 
 import sandbox
 import slack_files
+import slack_mcp
 import tool_registry
 import tool_runner
 
@@ -112,12 +113,13 @@ Working with `run_code` — inspect, then act, and always finish the job:
 - Finish. An inspection that identifies what needs doing is NOT the deliverable; the produced file is. Never end a turn having only worked out what you were going to do — if you have looked at the file and know the answer, write the output in your very next call.
 
 OCR & scanned images:
-- If a user attaches an image (PNG/JPG) or a scanned / text-less PDF and wants its text or tables, a registered tool may not fit — use `run_code`. Start in the "default" environment: preprocess with `cv2` (grayscale, upscale, threshold) and read with `pytesseract` (Tesseract).
+- Check the registered tools FIRST: some accept images, and each one's description says which file types it takes. A tool that covers the request beats raw OCR — the schedule/legend extractor, for one, takes photos and screenshots of a drawing sheet and finds and crops the schedule out of them itself. Only when no registered tool covers what was asked does image OCR fall to you.
+- For any other text or tables out of an image (PNG/JPG) or a scanned / text-less PDF, use `run_code`. Start in the "default" environment: preprocess with `cv2` (grayscale, upscale, threshold) and read with `pytesseract` (Tesseract).
 - Judge the result. If the extracted text comes back garbled, mostly empty, or low-confidence (e.g. low mean word confidence from `pytesseract.image_to_data`), you MAY escalate: tell the user in one short sentence that the quick OCR looked rough and you're trying a more powerful engine, then call `run_code` again with `environment` set to "neural_ocr" (RapidOCR). This is an explicitly allowed second step — the one exception to "don't re-run a succeeded result." Escalate at most once; do not loop.
 - If neural OCR still looks poor, stop and say so plainly — and suggest the original higher-quality source (e.g. the vector PDF instead of a photo) — rather than retrying further.
 
 Files & output:
-- Attached files are listed with handles like `file_1`. Pass those handles to a tool's `input_file` field. In `run_code`, the file you name is at env `INPUT_FILE`, and anything you write to env `OUTPUT_DIR` is uploaded to the thread automatically.
+- Attached files are listed with handles like `file_1`. Pass those handles to a tool's `input_file` field — or, for a tool that takes several files, all of them in one call via its `input_files` field (one call with every file, not one call per file). In `run_code`, the file you name is at env `INPUT_FILE`, and anything you write to env `OUTPUT_DIR` is uploaded to the thread automatically.
 - A *Routing note* in the conversation comes from a tool's own trigger rules (a filename pattern, a phrase in the request). Follow it: use the tool it names, or — when it says the tool needs a file that isn't attached — stop and ask for the file with `ask_user` instead of starting anything.
 - Every file a tool or `run_code` produces is uploaded to the Slack thread for the user automatically. Never re-create, re-deliver, or tell the user where to find a file.
 - `OUTPUT_DIR` is for finished deliverables ONLY. Never write scratch, debug, or intermediate files there — they get uploaded to the user's thread as if they were the work. Use `print()` for anything you just want to see yourself.
@@ -258,7 +260,8 @@ def _wrap_up_text(say: str, stop_reason, artifacts: list, last_error: str | None
             "what you need, and I'll take another run at it.")
 
 
-def run_agent(client, question, history, staging, tool_specs, reporter, on_artifacts, cancel_event, logger) -> AgentResult:
+def run_agent(client, question, history, staging, tool_specs, reporter, on_artifacts, cancel_event,
+              logger, mcp=None, in_dm=False) -> AgentResult:
     """Drive the tool-use loop.
 
     - reporter: the turn's voice (status.Reporter). `.say()` posts a new thought the user
@@ -269,6 +272,10 @@ def run_agent(client, question, history, staging, tool_specs, reporter, on_artif
       later failure or the step cap).
     - cancel_event: a threading.Event-like; if it trips, the loop stops ASAP — including
       abandoning a tool mid-run — and returns a cancelled AgentResult.
+    - mcp: the Slack MCP connector (slack_mcp.build), or None. Its tools run server-side at
+      Anthropic rather than here, so they never reach the executor below — they arrive as
+      `mcp_tool_use` blocks already answered, and the only thing this loop owes them is a
+      `pause_turn` continuation when the server hits its own tool-call ceiling mid-turn.
 
     The loop's contract with the user: it ALWAYS returns an AgentResult carrying text worth
     reading. Every exit — success, model error, tool wall, cancel, step cap, a question back
@@ -280,6 +287,11 @@ def run_agent(client, question, history, staging, tool_specs, reporter, on_artif
     cancel_event = cancel_event or _NeverCancel()
     tool_defs = (tool_registry.anthropic_tool_defs(tool_specs)
                  + [sandbox.run_code_tool_def(), ASK_USER_TOOL])
+    system = ACTION_SYSTEM
+    if mcp is not None:
+        tool_defs = tool_defs + list(mcp.tools)
+        system = ACTION_SYSTEM + "\n" + slack_mcp.guidance(
+            in_dm=in_dm, own_token=mcp.own_token, for_action=True)
 
     # Start booting the sandbox now (no-op unless it's the Lambda backend and it's gone cold).
     # It takes tens of seconds to come up, and the model spends at least one turn writing code
@@ -338,16 +350,39 @@ def run_agent(client, question, history, staging, tool_specs, reporter, on_artif
 
         reporter.doing("reading your request" if step == 0 else "working out what to do next")
         try:
-            msg = client.messages.create(
+            kwargs = dict(
                 model=ACTION_MODEL,
                 max_tokens=MAX_TOKENS,
                 thinking={"type": "disabled"},
-                system=ACTION_SYSTEM,
+                system=system,
                 tools=tool_defs,
                 messages=messages,
                 timeout=MODEL_TIMEOUT,
             )
+            if mcp is None:
+                msg = client.messages.create(**kwargs)
+            else:
+                # The connector lives on the beta endpoint, and `mcp_servers` without the
+                # matching `mcp_toolset` already in tool_defs is a validation error, not a
+                # silent no-op — the two halves are added together or not at all.
+                msg = client.beta.messages.create(
+                    betas=mcp.betas, mcp_servers=mcp.mcp_servers, **kwargs
+                )
         except Exception as err:
+            # A Slack token the MCP server rejects fails the whole call, not just the search
+            # — so the user's actual job would die because a lookup they never asked for
+            # couldn't authenticate. Drop the connector and run the step again without it.
+            if mcp is not None and isinstance(err, anthropic.APIStatusError) \
+                    and slack_mcp.is_connection_error(err):
+                slack_mcp.pause(f"{type(err).__name__}: {err}")
+                logger.warning("agent: slack-mcp unavailable on step %d — retrying without it",
+                               step + 1)
+                trace.append(f"SLACK UNAVAILABLE[{step + 1}]: {_short(err, 200)}")
+                mcp = None
+                tool_defs = [t for t in tool_defs if t.get("type") != "mcp_toolset"]
+                system = ACTION_SYSTEM
+                reporter.snag("I can't search Slack right now — carrying on without it.")
+                continue
             # Don't let this escape as a bare exception: the user would get a generic
             # "something went wrong" and we'd lose the trace and any files already made.
             logger.exception("agent: model call failed on step %d", step + 1)
@@ -365,11 +400,33 @@ def run_agent(client, question, history, staging, tool_specs, reporter, on_artif
 
         say = _text_of(msg)
         tool_calls = [b for b in msg.content if getattr(b, "type", None) == "tool_use"]
+        # Slack MCP calls were already made and answered on Anthropic's side; they show up
+        # here as history, not as work to do. They still count as the bot having DONE
+        # something, which is what stops the "you promised and never acted" nudge below from
+        # firing on a turn that did nothing but search.
+        slack_calls = slack_mcp.tools_used(msg) if mcp is not None else []
+        if slack_calls:
+            used_a_tool = True
+            trace.append(f"SLACK[{step + 1}]: {', '.join(slack_calls)}")
+            logger.info("agent: slack-mcp called %s (as %s token)",
+                        ", ".join(slack_calls), mcp.token_source)
         logger.info("agent: step %d/%d | stop=%s | says=%r | calls=%s",
                     step + 1, MAX_TOOL_ITERATIONS, msg.stop_reason, _short(say, 160),
                     [b.name for b in tool_calls])
         if say:
             trace.append(f"ASSISTANT[{step + 1}]: {say}")
+
+        # The server-side tools hit their own per-turn ceiling mid-answer. The assistant turn
+        # is already appended verbatim above, which is exactly what a continuation needs — so
+        # just go round again. It costs a step, which is the point: a search that will not
+        # settle should run out of budget rather than run forever.
+        if msg.stop_reason == "pause_turn":
+            logger.info("agent: pause_turn on step %d — continuing the same turn", step + 1)
+            trace.append(f"PAUSE[{step + 1}]: continuing after server-side tool use")
+            if say:
+                reporter.say(say)
+            reporter.doing("still searching Slack")
+            continue
 
         if msg.stop_reason != "tool_use":
             # The "silently drops off" case, in both its forms. (a) A file is sitting there,

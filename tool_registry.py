@@ -249,7 +249,10 @@ def routing_note(specs: dict[str, ToolSpec], question: str, files) -> str:
     for name in dict.fromkeys([*by_fn, *by_kw]):
         spec = (by_fn.get(name) or by_kw.get(name))[0]
         types = ", ".join(f".{t}" for t in (spec.accepts or {}).get("file_types", [])) or "a file"
-        needs_file = "input_file" in (spec.input_schema.get("required") or [])
+        # Either spelling means the tool cannot run without an attachment (see
+        # tool_runner._resolve_input): input_file for the one-file tools, input_files for
+        # the ones that take a set.
+        needs_file = bool({"input_file", "input_files"} & set(spec.input_schema.get("required") or []))
         accepted = [f for f in files if _accepts_file(spec, f)]
         ok = by_fn[name][2] if name in by_fn else []
         firm = name in by_kw and by_kw[name][2]

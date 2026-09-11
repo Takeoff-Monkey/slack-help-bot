@@ -1,14 +1,21 @@
 {
   "name": "schedule-extractor",
-  "version": "1",
-  "description": "Extract plant legends and material schedules from a construction/landscape PDF into an Excel workbook (one sheet per detected schedule).",
-  "when_to_use": "Use when the user attaches a construction, landscape, or site PDF and asks to pull plant legends, material schedules, planting tables, or similar tabular schedules out of it into a spreadsheet. Do NOT use for free-text questions or for PDFs with no schedule/legend tables.",
+  "version": "2",
+  "description": "Extract plant legends and material schedules from construction/landscape drawings — a PDF, or images (photos/screenshots) of sheets — into an Excel workbook (one sheet per detected schedule).",
+  "when_to_use": "Use when the user attaches a construction, landscape, or site PDF, or one or more images of a drawing sheet or schedule table, and asks to pull plant legends, material schedules, planting tables, or similar tabular schedules out of them into a spreadsheet. Images may be photos or screenshots of a whole sheet (the schedule is located and cropped out automatically) or of just the table. Pass every schedule image in one call via input_files — they all land in one workbook, one sheet per schedule. Do NOT use for free-text questions, or for drawings with no schedule/legend tables.",
   "input_schema": {
     "type": "object",
     "properties": {
+      "input_files": {
+        "type": "array",
+        "items": { "type": "string" },
+        "minItems": 1,
+        "maxItems": 10,
+        "description": "Handles of the attached files to process, e.g. [\"file_1\", \"file_2\"]. Each must be one of the file handles listed in the conversation. One PDF, or one or more images; pass all the schedule images the user sent in a single call rather than calling once per image."
+      },
       "input_file": {
         "type": "string",
-        "description": "Handle of the attached PDF to process, e.g. \"file_1\". Must be one of the file handles listed in the conversation."
+        "description": "Single-file shorthand for input_files, e.g. \"file_1\". Use input_files when there is more than one."
       },
       "ignore_first_column": {
         "type": "boolean",
@@ -19,14 +26,17 @@
         "type": "array",
         "items": { "type": "integer" },
         "default": [],
-        "description": "Zero-based page indices to skip (e.g. cover sheets). Empty means scan every page."
+        "description": "Zero-based page indices to skip in a PDF (e.g. cover sheets). Empty means scan every page. Ignored for images."
       }
     },
-    "required": ["input_file"],
+    "required": ["input_files"],
     "additionalProperties": false
   },
-  "accepts": { "file_types": ["pdf"], "max_files": 1 },
-  "output": "An .xlsx workbook with one sheet per detected schedule (named \"Page N, Schedule M\"), plus a short text summary of how many schedules were found.",
+  "accepts": {
+    "file_types": ["pdf", "png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff", "gif"],
+    "max_files": 10
+  },
+  "output": "An .xlsx workbook with one sheet per detected schedule — named \"Page N, Schedule M\" for a lone PDF, or after the source image/page when several files are processed — plus a short text summary of how many schedules were found.",
   "entrypoint": {
     "local": { "type": "subprocess", "cmd": ["run.py"], "cwd": "tools/schedule-extractor" },
     "lambda": { "type": "lambda", "function_name": "tm-tool-schedule-extractor" }

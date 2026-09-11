@@ -1,6 +1,6 @@
 # slack-help-bot
 
-AI Slack bot that answers teammates' questions about Takeoff Monkey's internal tech stack (Heroku bots, Zapier flows, AWS Lambdas, Monday automations, etc). Backed by a library of HTML "skill" files in [`docs/skills/`](docs/skills/). Hosted on Heroku.
+AI Slack bot that answers teammates' questions about Takeoff Monkey's internal tech stack (Heroku bots, Zapier flows, AWS Lambdas, Monday automations, etc). Backed by a library of HTML "skill" files in [`docs/skills/`](docs/skills/), and — when a question's answer lives in a thread or a canvas rather than in the docs — by [searching Slack itself](#searching-slack-slack-mcp). Hosted on Heroku.
 
 The bot ([app2.py](app2.py)) is separate from the Ewing note updater ([app.py](app.py)) — both share this repo but each runs as its own Heroku app/process.
 
@@ -99,6 +99,40 @@ Bot expects these env vars on Heroku:
 | `SELECTOR_MODEL` | Claude model for the cheap routing/skill-picker call. Default `claude-haiku-4-5`. |
 | `ANSWER_MODEL` | Claude model for Q&A answers. Default `claude-sonnet-5`. |
 | `ACTION_MODEL` | Claude model for the tool-use loop. Default `claude-sonnet-5`. |
+| `SLACK_MCP_USER_TOKEN` | Optional `xoxp-…` user token that switches on Slack search. Unset ⇒ the bot answers from the skill docs only. See [DEPLOY.md Part 0b](DEPLOY.md) for the scopes and the per-user alternative. |
+
+## Searching Slack (Slack MCP)
+
+Some questions can't be answered from `docs/skills/` because the answer was never written
+down there — *"when did I send the login for Arazoza?"*, *"who set this automation up?"*,
+*"what did we decide about the Ewing threshold?"*. For those the bot searches the workspace
+itself: messages, files, channels, and canvases.
+
+It does that through [Slack's hosted MCP server](https://docs.slack.dev/ai/slack-mcp-server/),
+handed to Anthropic's MCP connector — Anthropic opens the connection and runs the searches
+server-side inside the model call the bot was already making. There's no MCP client in this
+repo and nothing extra to deploy; see [`slack_mcp.py`](slack_mcp.py).
+
+**It's off until a user token is set** (`SLACK_MCP_USER_TOKEN`), because Slack's MCP server
+acts on behalf of a *person* and rejects the bot's `xoxb-…` token. [DEPLOY.md Part 0b](DEPLOY.md)
+covers the scopes, the install, and — the part worth reading before you turn it on — whose
+Slack a shared token actually searches.
+
+How it behaves once on:
+
+- **Only the turns that need it pay for it.** The selector (the cheap Haiku call the bot
+  already makes) returns a `needs_slack` flag; the connector is attached only then. A question
+  the skill docs answer, or a file job that names a tool, never touches Slack.
+- **Sources say where it came from.** An answer drawing on a search is footed with
+  `_Sources: Slack search, …_`, and the bot is told to link the Slack permalink and attribute
+  what it found ("Tommy said in #dev on May 3…") rather than present it as documented fact.
+- **Credentials get linked, not re-pasted** — outside a DM, if it finds a password or key it
+  points at the original message instead of copying it into a channel where more people can
+  see it.
+- **A broken token doesn't break the bot.** Slack rejecting the token fails the whole model
+  call, so the bot retries without the connector, says the answer is docs-only, and stops
+  attaching it for ten minutes.
+
 
 ## Edit the knowledge base
 
