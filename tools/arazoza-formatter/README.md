@@ -33,7 +33,7 @@ individually.
 | 4 | **Merge** | `Description` = `Description` + `" - "` + `Size` wherever both exist. Skipped only when the description already *ends with* `" - <size>"` (so `Cont` inside *Contorta* still gets its size appended). |
 | 5 | **Soil & mulch depth** | For soil/mulch items whose text says *depth* (`Mulch 3" Depth`, `12" Depth of Planting Soil`, `Mulch 3"-4" depth`, `Mulch 2 1/2" depth`), `Size` becomes the depth measurement (`3"`, `3"-4"`, `2 1/2"`) and `Depth` is added to `Package`. A generic size with no word *depth* is left alone. An item counts as soil/mulch if its text says soil/topsoil/mulch **or** the nearest header above it is a matched Soil / Mulch grouping — a flagged header or a coloured section marker ends that context, so an irrigation sleeve's "18" depth cover" under `IRRIGATION` is never treated as soil. |
 | 6 | **UOM** | Case-insensitive, punctuation-tolerant: `count`/`ea`/`each` → `Unit`, `sf` → `Square Feet`, `lf` → `Linear Feet`. Applied to the primary `UOM` column only — `UOM2` keeps `SF`/`CY`, matching every finished Arazoza sheet we have. |
-| 7 | **Packages** | Package tokens found in `Size` are copied into `Package` in canonical form — `FG`/`field grown` → `FG`, `cont`/`container` → `Container`, `b&b`/`B.&B.`/`balled and burlapped` → `B&B` — and `/`-joined when there are several (`FG/B&B`). Merged with anything already in `Package`, never duplicated. |
+| 7 | **Packages** | Package tokens found in `Size` are copied into `Package` in canonical form — `FG`/`field grown` → `FG`, `cont`/`container` → `Container`, `b&b`/`B.&B.`/`balled and burlapped` → `B&B` — and `/`-joined when there are several (`FG/B&B`). A `Size` with a gallon plant size (`3 Gal`, `15 gallon`, `1Gal.`, `45 G`) and none of those tokens gets `Container`. Merged with anything already in `Package`, never duplicated. |
 
 Rows are bounded by the sheet's Excel table when the header row is a table header; anything
 with data pasted *below* the table is formatted as well and called out in the summary (the
@@ -98,9 +98,9 @@ told to set that **only** when the user explicitly asks.
   `Fittings`, `Spray Head`, …) are not in it and will be flagged red — add lines to
   [`takeoff-groupings.txt`](takeoff-groupings.txt) (`<code> - <name>`) and they are picked up on
   the next run, no code change.
-- Finished sheets made by hand say `Container` for every gallon size and `-` where there is no
-  package; the spec's package rule only lifts the tokens above out of `Size`, so a plain
-  `3 Gal` leaves `Package` empty. Easy to add (a `gal` → `Container` rule in step 7) if wanted.
+- A gallon size that also names another package (`65 gal FG`, `3 Gal B&B`) gets only that
+  package, not `Container` as well — the gallon rule only applies when Size has no package token.
+  Hand-made sheets also put `-` in Package where there is none; the tool leaves it empty.
 - In the Vela Cove worksheet the estimator changed OST's `LF` to `Unit` on every shrub row
   (the counts were plants, not feet). The spec says `lf` → `Linear Feet`, so the tool does that;
   a "plant groups count in Units" rule would need the user's say-so.

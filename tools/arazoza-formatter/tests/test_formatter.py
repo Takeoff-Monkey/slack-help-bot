@@ -247,7 +247,13 @@ class HelperTests(unittest.TestCase):
             "continuous": [],
             "contractor supplied": [],
             "continuous hedge, cont.": ["Container"],
-            "45 G": [],
+            "45 G": ["Container"],
+            "3 Gal": ["Container"],
+            "1Gal.": ["Container"],
+            "15 gallon": ["Container"],
+            "3 Gal B&B": ["B&B"],
+            "Gallery": [],
+            "Galvanized": [],
             "3\" Cal": [],
             "": [],
             # spelled-out / punctuated forms of the same packages
@@ -513,8 +519,9 @@ class SyntheticEndToEndTests(unittest.TestCase):
         self.assertEqual(self.val("D21"), "Container")
         self.assertEqual(self.val("D23"), "B&B")
         self.assertEqual(self.val("D50"), "Container")
-        self.assertIsNone(self.val("D19"))                    # '45 G' is not a package token
-        self.assertIsNone(self.val("D26"))
+        self.assertEqual(self.val("D19"), "Container")        # '45 G': a gallon size with no package token
+        self.assertEqual(self.val("D26"), "Container")        # '3 G, 36" Ht...': gallon size, no token
+        self.assertIsNone(self.val("D42"))                    # no gallon size, no package
 
     def test_step7_two_packages_joined_with_slash_and_merged_with_existing(self):
         self.assertEqual(self.val("D24"), "Container/FG/B&B")
@@ -705,7 +712,7 @@ class VelaCoveGoldenTests(unittest.TestCase):
         self.assertEqual(len(lf_rows), 19)
         self.assertTrue(all(40 <= r <= 59 for r in lf_rows), lf_rows)
         # and the tool never writes a package the spec doesn't define
-        self.assertEqual({formatter._txt(self.tool.cell(a, 4).value) for a, _ in self.pairs}, {"", "Depth"})
+        self.assertEqual({formatter._txt(self.tool.cell(a, 4).value) for a, _ in self.pairs}, {"", "Depth", "Container"})
 
     def test_workbook_survives_including_the_extra_sheet(self):
         names = zipfile.ZipFile(self.out).namelist()
@@ -802,11 +809,13 @@ class RealSampleTests(unittest.TestCase):
                 self.assertEqual(formatter._txt(self.ws.cell(row, 4).value), "Depth")
 
     def test_package_only_from_declared_tokens(self):
-        # The human-made sheet says 'Container' for every gallon size; the spec's package rule
-        # only lifts FG / cont / container / B&B out of Size, and none of these sizes carry one,
-        # so Package stays empty — a documented difference, not a bug.
+        # The human-made sheet says 'Container' for every gallon size; a gallon size with no
+        # package token of its own is Container. Rows with no gallon size stay empty.
         for row, exp in self.expected.items():
-            if exp["D"] in ("Container", "-"):
+            size = formatter._txt(self.ws.cell(row, 3).value)
+            if exp["D"] == "Container":
+                self.assertEqual(formatter._txt(self.ws.cell(row, 4).value), "Container", f"row {row}")
+            elif exp["D"] == "-":
                 self.assertEqual(formatter._txt(self.ws.cell(row, 4).value), "", f"row {row}")
 
     def test_nothing_flagged_red_on_a_clean_sheet(self):

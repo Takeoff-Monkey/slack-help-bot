@@ -21,6 +21,7 @@ place that sequences them and nothing else calls the steps directly.
   5. Soil/mulch items whose text says "depth": Size = the depth measurement, Package += Depth.
   6. UOM: count/ea/each -> Unit, sf -> Square Feet, lf -> Linear Feet.
   7. Package tokens found in Size (FG, cont/container, B&B) are listed in Package, "/"-joined.
+     A Size with a gallon plant size (Gal, gallon, "45 G") and no package token -> Container.
 
 Two kinds of row are protected from the item steps: rows that held a header at step 1
 (matched, flagged or coloured — their label, note and cells are left as they are), and rows
@@ -88,6 +89,10 @@ PACKAGE_PATTERNS = (
     (re.compile(r"\bcont(?:ainers?)?\.?(?![a-z])", re.I), "Container"),
     (re.compile(r"\bb\.?\s*(?:&|and|\+)\s*b\.?s?(?![a-z])|\bball(?:ed)?\s*(?:&|and)\s*burlap(?:ped)?\b", re.I), "B&B"),
 )
+
+# A gallon plant size ("3 Gal", "15 gallon", "1Gal.", "45 G"). Only consulted when Size names no
+# package of its own: a gallon size with no FG / B&B / container wording is a container plant.
+GALLON_RE = re.compile(r"(?<![a-z])gal(?:lons?)?\.?(?![a-z])|(?<![a-z])\d+\s*g(?![a-z])", re.I)
 
 SOIL_MULCH_RE = re.compile(r"\b(soil|topsoil|mulch)\b", re.I)
 DEPTH_RE = re.compile(r"\bdepth\b", re.I)
@@ -851,6 +856,8 @@ def find_packages(size_text: str) -> list[str]:
     for _, canonical in sorted(hits):
         if canonical not in out:
             out.append(canonical)
+    if not out and GALLON_RE.search(size_text):
+        out.append("Container")
     return out
 
 
