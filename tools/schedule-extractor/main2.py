@@ -9,7 +9,9 @@ import re
 import boto3
 from PIL import Image, ImageOps, UnidentifiedImageError
 from textractcaller.t_call import call_textract, Textract_Features
-from textractprettyprinter.t_pretty_print import Pretty_Print_Table_Format, Textract_Pretty_Print, get_string
+from textractprettyprinter.t_pretty_print import Pretty_Print_Table_Format, Textract_Pretty_Print, get_string, convert_table_to_list
+import trp
+from tabulate import tabulate
 import anthropic
 import base64
 from dotenv import load_dotenv
@@ -64,13 +66,11 @@ IMAGE_EXTS = ("png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff", "gif")
 # these are the numbers the API stops accepting, not the numbers it reads well.
 MAX_OCR_SIDE = 8000
 MAX_OCR_BYTES = 4_500_000
-# Render DPI for the two rasterization steps. A PDF page is vector, so rendering it larger
-# than life genuinely recovers detail; an image-derived page is already pixels (built at
-# 1pt = 1px, see image_page_pdf), and upscaling it only adds megabytes for Textract to
-# reject — so those pages render 1:1 at NATIVE_DPI.
+# Render DPI for the two PDF rasterization steps. A PDF page is vector, so rendering it larger
+# than life genuinely recovers detail. Images are never re-rendered: they go to Textract at
+# their own resolution (only shrunk, by fit_for_ocr, when over its ceiling).
 CROP_DPI = 300
 OCR_DPI = 200
-NATIVE_DPI = 72
 
 # Switch to debug mode (verbose logging during runtime)
 DEBUG = False
@@ -251,33 +251,14 @@ def fit_for_ocr(image):
 def image_to_ocr_bytes(image):
     return image_to_bytes(fit_for_ocr(image))
 
-# Wrap a raster image in a one-page PDF so the whole PDF pipeline can run over it unchanged.
-#
-# Building the page rather than calling fitz.open(stream=..., filetype="png") buys two things:
-#   * 1 point = 1 pixel. Opening an image directly scales the page by whatever DPI is tagged
-#     in the file's metadata (a 1200px image tagged 300dpi opens as a 288pt page), which would
-#     silently change what every geometry constant here — SCHED_MARGIN, MIN_SCHED_SIZE — means
-#     from one attachment to the next. A page sized in pixels pins them to pixels.
-#   * The page has no text layer, so detection takes the Textract OCR path on its own, and
-#     get_sched_rects + extract_pdf_image then crop the schedule out of the image exactly the
-#     way they crop it out of a drawing sheet.
-#
-# EXIF orientation is applied first (a sideways phone photo would otherwise defeat the
-# row/column geometry entirely), and the image is fitted to Textract's ceiling before the page
-# is sized, so page coordinates and OCR coordinates stay in one space. Multi-frame files
+# Decode an attachment image into something Textract will take. EXIF orientation is applied
+# first (a sideways phone photo comes back as rotated garbage otherwise), and multi-frame files
 # (animated GIF, multi-page TIFF) contribute their first frame.
-def image_page_pdf(image_bytes : bytes) -> bytes:
+def load_image(image_bytes : bytes):
     img = ImageOps.exif_transpose(Image.open(BytesIO(image_bytes)))
     if img.mode not in ("RGB", "L"):
         img = img.convert("RGB")
-    img = fit_for_ocr(img)
-    doc = fitz.open()
-    try:
-        page = doc.new_page(width=img.width, height=img.height)
-        page.insert_image(page.rect, stream=image_to_bytes(img))
-        return doc.tobytes()
-    finally:
-        doc.close()
+    return fit_for_ocr(img)
 
 def is_image_name(name : str) -> bool:
     return (name or "").rsplit(".", 1)[-1].lower() in IMAGE_EXTS
@@ -305,13 +286,10 @@ def textract_page_blocks(page, dpi=OCR_DPI):
     return blocks
 
 
-# Amazon Textract (once we know table coords, we use this to extract table data)
-def extract_table_data(image_bytes):
-    textract_data = call_textract(input_document=image_bytes, features=[Textract_Features.TABLES])
-    textract_str = get_string(textract_json=textract_data, table_format=Pretty_Print_Table_Format.github, output_type=[Textract_Pretty_Print.TABLES])
-
-    if DEBUG:
-        print(textract_str)
+# Turn one tabulate'd ("github" format) table string into row-lists. Kept exactly as it has
+# always parsed, quirks and all — save_excel's leading-row cleanup is written against this shape,
+# so every table, from a PDF crop or an image, goes through here.
+def _rows_from_table_string(textract_str):
     # cell_data = textract_str.replace("\r", "|").replace(' ",', "|").replace(" ,", "|").replace('""', '"').split("|")
     cell_data = textract_str.split("|")
     table = [[]]
@@ -332,6 +310,37 @@ def extract_table_data(image_bytes):
     if DEBUG:
         print(table)
     return table
+
+# Amazon Textract (once we know table coords, we use this to extract table data). Every table
+# Textract finds in the region is folded into one — fine for a tight schedule crop.
+def extract_table_data(image_bytes):
+    textract_data = call_textract(input_document=image_bytes, features=[Textract_Features.TABLES])
+    textract_str = get_string(textract_json=textract_data, table_format=Pretty_Print_Table_Format.github, output_type=[Textract_Pretty_Print.TABLES])
+
+    if DEBUG:
+        print(textract_str)
+    return _rows_from_table_string(textract_str)
+
+# Whole-frame variant of extract_table_data for images, where no keyword crop has narrowed the
+# frame to one schedule first. Textract often splits one schedule into several tables (each
+# seed-mix block of a planting schedule comes back as its own), so they're folded back into a
+# single table, blank row between — the same shape extract_table_data gives. A "table" with
+# fewer than two filled rows or columns is a stray box (a title-block cell, a boxed note), not
+# part of a schedule, and is left out. Returns None when nothing table-like is in the frame.
+def extract_frame_table(image_bytes):
+    textract_data = call_textract(input_document=image_bytes, features=[Textract_Features.TABLES])
+    textract_str = ""
+    for page in trp.Document(textract_data).pages:
+        for trp_table in page.tables:
+            rows = convert_table_to_list(trp_table, trim=True)
+            filled = [row for row in rows if any(cell for cell in row)]
+            if len(filled) < 2 or max(sum(1 for cell in row if cell) for row in filled) < 2:
+                continue
+            textract_str += tabulate(rows, tablefmt=Pretty_Print_Table_Format.github.name) + "\n\n"
+
+    if DEBUG:
+        print(textract_str)
+    return _rows_from_table_string(textract_str) if textract_str else None
 
 # Claude Vision (unused; less accurate & slower. Do not use!)
 def extract_table_data_vision(image_bytes):
@@ -476,20 +485,10 @@ def save_excel(data : dict, filename : str, stripped : bool = False,
 
 
 
-# Find every schedule on ONE page and return its tables (a list, possibly empty).
-#
-# This is the single code path both input kinds take: an image is wrapped in a one-page PDF
-# by image_page_pdf and arrives here, so it gets the same keyword detection, bounding-box
-# crop and Textract table recovery as a page out of a drawing set.
-#
-# crop_dpi / ocr_dpi are the two raster scales (NATIVE_DPI for image-derived pages, which are
-# already pixels). whole_page_fallback decides what "nothing detected" means and is on only
-# for images: an attachment that is already a tight crop of the table has no "PLANT SCHEDULE"
-# title left to anchor on, so the frame itself is the schedule. PDFs keep the old behaviour of
-# skipping such a page — running table recovery over every page of a 60-sheet set would return
-# junk for most of them.
-def _process_page(page, page_label : str = "page", crop_dpi : int = CROP_DPI,
-                  ocr_dpi : int = OCR_DPI, whole_page_fallback : bool = False) -> list:
+# Find every schedule on ONE PDF page and return its tables (a list, possibly empty).
+# Pages with no "schedule"/"legend" title next to a "qty"/"symbol" header are skipped —
+# running table recovery over every page of a 60-sheet set would return junk for most of them.
+def _process_page(page, page_label : str = "page") -> list:
     tables = []
 
     # Primary: the PDF's own text layer (fast + exact). Empty for an image.
@@ -498,12 +497,12 @@ def _process_page(page, page_label : str = "page", crop_dpi : int = CROP_DPI,
     heads = find_in_page_from_list(blocks, HEAD_KEYWORDS)
 
     # Fallback: no schedule found in the text layer (a scanned/flattened sheet with no
-    # selectable text, or any image input) — OCR the whole page with Textract and retry
+    # selectable text) — OCR the whole page with Textract and retry
     # detection on those blocks. extract_table_data already works from a rasterized region,
     # so table extraction works on image-only pages too once we have the coordinates.
     if len(scheds) == 0 or len(heads) == 0:
         try:
-            ocr_blocks = textract_page_blocks(page, dpi=ocr_dpi)
+            ocr_blocks = textract_page_blocks(page)
         except Exception as ocr_err:
             if DEBUG:
                 print(f"  {page_label}: OCR fallback failed: {ocr_err}")
@@ -522,7 +521,7 @@ def _process_page(page, page_label : str = "page", crop_dpi : int = CROP_DPI,
 
         bboxes = get_sched_rects(scheds, heads if len(heads) > 0 else None, blocks, flip_axis)
 
-        if bboxes is None and not whole_page_fallback:
+        if bboxes is None:
             raise Exception(f"Schedule found on {page_label}, but its coordinates could not be accessed.")
 
     # Process each schedule from the current page (in case multiple exist)
@@ -545,22 +544,11 @@ def _process_page(page, page_label : str = "page", crop_dpi : int = CROP_DPI,
                 rect[3] = clamp(rect[3], 0, page.rect.height)
 
             # Take an image of the schedule using rect coords, and use Textract to get table data
-            image = extract_pdf_image(page, (rect[0] - 20, rect[1] - 20, rect[2] + 20, rect[3] + 20), dpi=crop_dpi)
+            image = extract_pdf_image(page, (rect[0] - 20, rect[1] - 20, rect[2] + 20, rect[3] + 20), dpi=CROP_DPI)
 
             tables.append(extract_table_data(image_to_ocr_bytes(image)))
         else:
             continue
-
-    # Nothing anchored on this page. For an image that most likely means the user cropped the
-    # schedule themselves before sending it, so the whole frame is the table.
-    if not tables and whole_page_fallback:
-        image = extract_pdf_image(page, page.rect, dpi=crop_dpi)
-        table = extract_table_data(image_to_ocr_bytes(image))
-        # Textract returns an empty shell when it finds no table at all; don't make a sheet of it.
-        if any(any(str(cell).strip() for cell in row) for row in table):
-            tables.append(table)
-        elif DEBUG:
-            print(f"  {page_label}: no table found in the whole frame either.")
 
     return tables
 
@@ -589,16 +577,16 @@ def process_pdf(pdf_bytes : bytes, skip_pages : list = None) -> dict:
 
 
 # Extract every schedule from a single image. Returns [table, ...] — the same shape one PDF
-# page produces. Handles both kinds of attachment: a photo/screenshot of a full sheet (the
-# schedule is found and cropped out of it, as on a PDF page) and an image of nothing but the
-# schedule (no title to anchor on, so the frame is taken as the table).
+# page produces.
+#
+# Images skip the keyword/header detection PDFs use. Most are screenshots: cropped to the
+# table, often without its "PLANT SCHEDULE" title, or with the header row scrolled off, and
+# OCR splits a header row into separate LINE blocks, so anchoring on "QTY" would crop the
+# frame down to that one column. Textract's table recovery finds the table in the frame by
+# itself, so the whole image goes to it and becomes one sheet.
 def process_image(image_bytes : bytes) -> list:
-    pdf = fitz.open(stream=BytesIO(image_page_pdf(image_bytes)), filetype="pdf")
-    try:
-        return _process_page(pdf[0], page_label="the image", crop_dpi=NATIVE_DPI,
-                             ocr_dpi=NATIVE_DPI, whole_page_fallback=True)
-    finally:
-        pdf.close()
+    table = extract_frame_table(image_to_bytes(load_image(image_bytes)))
+    return [table] if table else []
 
 
 # One line about a failed source that the bot can repeat to the user as-is. PIL's

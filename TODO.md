@@ -3,8 +3,8 @@
     - the last column at the end called 'column1' needs to be filled w/ scraped data from the 'QTY' column on the attached schedule
         - when the user sends in an Arazoza job request, there should be a schedule (or schedules) along with the worksheet file you're modifying
         - these schedules will be images, the names corresponding to 
-3. schedule-extractor widget is relying on schedule headers in images
-    - imagine are most often screenshots, so it shouldn't look for headers
+3. ~~schedule-extractor widget is relying on schedule headers in images~~ → `tools/schedule-extractor/main2.py` (2026-10-14)
+    - ~~images are most often screenshots, so it shouldn't look for headers~~
 4. wait for warm load
     - the bot impatiently tries to use the sandbox before it's ready; if it's not ready right when it goes to use it, it needs to back off for 15-20 seconds and then try again
     - it should give a max of 3 tries before giving up

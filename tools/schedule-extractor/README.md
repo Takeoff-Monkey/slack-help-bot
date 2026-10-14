@@ -14,7 +14,7 @@ asks to pull schedules/legends out of them. It can also be run standalone from t
 
 ## What it does
 
-For each page (a PDF page, or one image) it:
+For each PDF page it:
 1. Finds schedule/legend anchors (`SCHED_KEYWORDS = ["schedule", "legend"]`) paired with a
    nearby table header (`HEAD_KEYWORDS = ["qty", "quantity", "symbol", "key"]`) — from the
    PDF's text layer where there is one, otherwise from a whole-page **AWS Textract** OCR pass.
@@ -22,28 +22,33 @@ For each page (a PDF page, or one image) it:
 3. Renders that region and sends it to **AWS Textract** (TABLES) for table recovery.
 4. Cleans the table into a pandas DataFrame and writes it to its own sheet.
 
+Images skip steps 1–2 (see below).
+
 Output: one `.xlsx` workbook. Optionally (`AI_CLEANUP`) a Claude pass tidies typos and splits
 common/botanical plant names — off by default.
 
 ### How images are handled
 
-An image is wrapped in a one-page PDF at **1 point = 1 pixel** (`image_page_pdf`) and then
-runs the *same* path as a PDF page, so both kinds of attachment behave the same way:
+Images do **not** go through keyword/header detection. Most are screenshots: cropped to the
+table, often without the "PLANT SCHEDULE" title or with the header row cut off, and OCR splits
+a header row into separate lines, so anchoring on "QTY" used to crop the frame down to that
+one column. Instead the **whole image** goes straight to Textract table recovery
+(`extract_frame_table`):
 
-- **A photo or screenshot of a whole sheet** — the schedule is found by OCR and **cropped out**
-  of the frame before table recovery, exactly as it is on a drawing page. The plan, title
-  block and notes around it are left behind.
-- **An image of just the schedule** — a user-made crop has no "PLANT SCHEDULE" title left to
-  anchor on, so when nothing is detected the whole frame is taken as the table. This fallback
-  is for images only: doing it per page on a 60-sheet PDF would return junk for most of them.
+- **One image → one sheet.** Textract often splits one schedule into several tables (each
+  seed-mix block comes back separately); they are merged back into one sheet, with a blank row
+  between blocks.
+- **Stray boxes are dropped.** A "table" with fewer than two filled rows or columns (a
+  title-block cell, a boxed note) is left out. An image with no table at all produces no sheet.
+- **A photo of a whole sheet** works, but every table on it lands in that sheet (title block,
+  ordinance tables, …). Cropping to the schedule gives a cleaner result.
 - **Several images at once** — each becomes its own sheet, named after the file it came from
   (`north beds, Schedule 1`), so a teammate can tell which photo a sheet is from. One
   unreadable attachment is reported in the summary and does not lose the others' schedules.
 
-Photos get an EXIF-orientation fix (a sideways phone photo would otherwise defeat the
-row/column geometry), and everything on its way to Textract is fitted to its size ceiling
-(`MAX_OCR_SIDE`, `MAX_OCR_BYTES`) — a 12 MP photo is otherwise rejected outright. Image pages
-render at their true resolution (`NATIVE_DPI`); upscaling a raster recovers no detail.
+Photos get an EXIF-orientation fix, and anything over Textract's size limits (`MAX_OCR_SIDE`,
+`MAX_OCR_BYTES`) is shrunk to fit — a 12 MP photo is otherwise rejected outright. Images are
+never upscaled; that recovers no detail.
 
 HEIC/HEIF are **not** accepted (no decoder here) — ask for a JPEG or PNG.
 

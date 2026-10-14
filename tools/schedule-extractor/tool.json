@@ -1,8 +1,8 @@
 {
   "name": "schedule-extractor",
   "version": "2",
-  "description": "Extract plant legends and material schedules from construction/landscape drawings — a PDF, or images (photos/screenshots) of sheets — into an Excel workbook (one sheet per detected schedule).",
-  "when_to_use": "Use when the user attaches a construction, landscape, or site PDF, or one or more images of a drawing sheet or schedule table, and asks to pull plant legends, material schedules, planting tables, or similar tabular schedules out of them into a spreadsheet. Images may be photos or screenshots of a whole sheet (the schedule is located and cropped out automatically) or of just the table. Pass every schedule image in one call via input_files — they all land in one workbook, one sheet per schedule. Do NOT use for free-text questions, or for drawings with no schedule/legend tables.",
+  "description": "Extract plant legends and material schedules from construction/landscape drawings — a PDF, or images (screenshots/photos) of schedule tables — into an Excel workbook (one sheet per detected schedule).",
+  "when_to_use": "Use when the user attaches a construction, landscape, or site PDF, or one or more images of a drawing sheet or schedule table, and asks to pull plant legends, material schedules, planting tables, or similar tabular schedules out of them into a spreadsheet. Images are usually screenshots of just the schedule table; no title or header row is needed. Each image becomes one sheet. A photo of a whole sheet also works, but any other tables on it end up in the same sheet. Pass every schedule image in one call via input_files — they all land in one workbook, one sheet per schedule. Do NOT use for free-text questions, or for drawings with no schedule/legend tables.",
   "input_schema": {
     "type": "object",
     "properties": {
