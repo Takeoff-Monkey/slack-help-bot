@@ -211,7 +211,7 @@ Available skills:
 
 ANSWER_SYSTEM = """You are an AI assistant for Takeoff Monkey, a takeoff/estimating services company. You answer teammates' questions about the company's internal tech stack — Heroku bots, Zapier automations, AWS Lambdas, Google Cloud apps, Monday board automations, Chrome extensions, etc.
 
-Ground every answer in the skill documentation provided in the user message. Be concise (Slack-appropriate length — typically 2–8 sentences, or a short bulleted list). When you reference a specific system, name it. If the provided skills don't cover the question, say so directly — don't guess or pad.
+Ground every answer in the skill documentation provided in the user message. Be concise and direct: lead with the answer itself — typically 1–5 sentences, or a short bulleted list for steps. No openers ("Great question!", "Sure!", "Happy to help"), no restating the question, no closing offers ("let me know if…"). When you reference a specific system, name it. If the provided skills don't cover the question, say so directly — don't guess or pad.
 
 Formatting — your output is rendered in Slack, which uses mrkdwn (not standard Markdown). Use only these conventions:
 - Inline code or identifiers: backticks, like `job-number` or `#12345!`
@@ -495,10 +495,10 @@ def answer_question(question: str, skill_ids: list[str], history: list[dict],
     if answer is None:
         if used:
             # It searched and then said nothing — better to name that than to look broken.
-            return (":warning: I searched Slack for that but couldn't put an answer together. "
-                    "Try narrowing it down (a channel, a rough date, who was involved)?", used)
-        return (":warning: The model came back with nothing for that one — no answer and no error. "
-                "Try rephrasing it and I'll have another go.", used)
+            return (":warning: Sorry — I searched Slack but couldn't pin down an answer. Could you "
+                    "narrow it down (a channel, a rough date, who was involved)?", used)
+        return (":warning: Sorry — I couldn't come up with an answer for that one. Try rephrasing "
+                "it and I'll have another go.", used)
     # A cut-off answer that looks complete is its own kind of silent failure.
     if getattr(final, "stop_reason", None) == "max_tokens":
         answer += "\n\n_(That got cut off — ask me to continue.)_"
@@ -599,6 +599,7 @@ def respond_to_question(question, history, staging, prefetched_skill_ids, report
         logger.info(f"Selected skills: {skill_ids} (history turns: {len(history)})")
         reporter.doing("searching Slack and reading the docs" if mcp is not None
                        else "reading the docs and writing your answer")
+        reporter.stage(status.HALFWAY)
         answer, slack_tools = answer_question(question, skill_ids, history,
                                               mcp=mcp, in_dm=in_dm, logger=logger)
         if skill_ids or slack_tools:
@@ -625,18 +626,18 @@ def respond_to_question(question, history, staging, prefetched_skill_ids, report
         # Not the hourglass, however apt: that's the progress-line prefix, and a line starting
         # with it is treated as scaffolding and dropped from thread history (status.is_progress_line).
         return agent_loop.AgentResult(
-            text=":warning: I'm getting rate-limited by the model API and have "
-                 "stopped. Nothing is still running — try me again in a minute.", failed=True)
-    except anthropic.APIError as e:
+            text=":warning: Sorry — the AI service is busy right now. Give it a minute, then "
+                 "ask me again.", failed=True)
+    except anthropic.APIError:
         logger.exception("Anthropic API error")
         return agent_loop.AgentResult(
-            text=f":x: I hit an API error and stopped: {e.message if hasattr(e, 'message') else e}",
+            text=f":x: Sorry — the AI service had a problem and I had to stop. {status.TRY_AGAIN}",
             failed=True)
-    except Exception as e:
+    except Exception:
         logger.exception("Unexpected error in respond_to_question")
         return agent_loop.AgentResult(
-            text=f":x: Something went wrong on my side and I've stopped: `{type(e).__name__}: {e}`. "
-                 f"Nothing is still running in the background.", failed=True)
+            text=f":x: Sorry — something went wrong on my end and I had to stop. {status.TRY_AGAIN}",
+            failed=True)
 
 
 def strip_mention(text: str) -> str:
@@ -672,14 +673,13 @@ def recent_thread_files(channel: str, thread_ts: str, logger) -> list[dict]:
 
 def reply_with_thinking_indicator(question, channel, thread_ts, files, history, say, client,
                                   logger, user_id=None):
-    """Post a 'Thinking…' placeholder, generate the reply, and narrate the work in between.
-    On the action path that means short progress lines ("Running schedule-extractor…") and
-    uploading produced files into the thread as they appear.
+    """Post a 'Thinking…' placeholder, generate the reply, and upload produced files into the
+    thread as they appear.
 
-    The first real line replaces the placeholder; each new thought after that is its own
-    message, so the thread reads back as a record of what the bot did rather than a single
-    line that overwrites itself. A status.Reporter owns all of it — it speaks up on its own
-    after 30 seconds of silence, and, because every exit below runs through finish()/fail(),
+    The bot's first real line ("Running schedule-extractor…") replaces the placeholder; after
+    that it stays quiet unless 30 seconds pass with nothing said, when one short progress line
+    appears ("Still working, about halfway there…") and the final answer later replaces it. A
+    status.Reporter owns all of it, and because every exit below runs through finish()/fail(),
     the turn is never left reading "Thinking…" forever. That last part is the bug this fixes:
     any exception outside the one try/except used to leave the bot looking busy for good.
     """
@@ -757,8 +757,8 @@ def _run_turn(question, channel, thread_ts, files, history, say, client, logger,
             if files and not staging.files:
                 why = ("\n" + "\n".join(f"- {r}" for r in staging.skipped)) if staging.skipped else ""
                 reporter.fail(
-                    f"I couldn't get hold of the file(s) for this:{why}\n\nTry re-uploading, "
-                    f"or tell me what you'd like me to do without them."
+                    f"Sorry — I couldn't open the file(s) you sent:{why}\n\nCould you try "
+                    f"re-uploading them, or tell me what you'd like me to do without them?"
                 )
                 return
 
@@ -814,9 +814,9 @@ def _run_turn(question, channel, thread_ts, files, history, say, client, logger,
         ))
         if missing:
             reporter.note(
-                ":warning: I produced " + ", ".join(f"`{f}`" for f in missing)
-                + " but couldn't attach " + ("it" if len(missing) == 1 else "them")
-                + " to this thread. Ask me to try again and I'll re-run it."
+                ":warning: Sorry — I made " + ", ".join(f"`{f}`" for f in missing)
+                + " but Slack wouldn't let me attach " + ("it" if len(missing) == 1 else "them")
+                + ". Reply _try again_ and I'll redo it."
             )
         tasks.deregister(task_key, cancel_event)
         if staging is not None:
@@ -913,8 +913,8 @@ def handle_unexpected_listener_error(error, body, logger):
         if channel and thread_ts:
             app.client.chat_postMessage(
                 channel=channel, thread_ts=thread_ts,
-                text=f":x: I hit an unexpected error and couldn't process that "
-                     f"(`{type(error).__name__}`). Nothing is running — please try again.",
+                text=f":x: Sorry — something went wrong on my end and I couldn't get to that. "
+                     f"{status.TRY_AGAIN}",
             )
     except Exception:
         logger.exception("Could not even report the listener error to Slack")

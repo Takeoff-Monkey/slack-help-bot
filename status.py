@@ -7,33 +7,35 @@ one message means every new thought erases the last one. The user watched a sing
 flicker between "reading the plans" and "running the extractor" with no way to see what the
 bot had actually done, and a snag reported mid-turn was gone the moment the next line landed.
 
-So a turn now reads as a transcript. There are two kinds of line:
+That transcript then overcorrected: every preamble, every "Running X…", every cold-start
+retry and every snag became its own message, and a routine job left a column of chatter —
+much of it raw errors that read to a teammate as "the bot is broken" when it was in fact
+working around them. So the thread now carries at most three things per turn:
 
-  permanent  a new thought — say(), snag(), finish(), fail(). Each one is its OWN message, so
-             it stays put and the thread reads back as a record of what happened.
-  transient  scaffolding that restates the thought we're already on — the "Thinking…"
-             placeholder, the watchdog's "still on it (42s)" ticker, waiting() for "the
-             sandbox is still booting". These overwrite the previous transient line and are
-             themselves overwritten by the next real thought, so a ticker never piles up and
-             never outlives what it was ticking about.
+  1. the FIRST thing the bot says (it replaces the "Thinking…" placeholder), so the user can
+     see what it's about to do and stop it if that's wrong;
+  2. one progress line, posted by the watchdog only after 30 seconds of silence and then
+     edited in place — "Still working, about halfway there…", "Almost done…". A snag turns it
+     into a light "small hiccup, trying another way" instead of an error message;
+  3. the final answer, which replaces that progress line so the thread never ends on it.
 
-That's what makes the first real line replace "Thinking…" (the placeholder is transient) while
-the second one starts a new message.
+Everything else the bot thinks along the way still goes to the log, not the thread.
 
 A Reporter owns that commentary for the life of a turn:
-  say()      a new thought — the model's own preamble, or the loop's ("Running X…")
-  waiting()  we're still on the same thought, just still waiting — replaces, doesn't stack
-  doing()    sets the current activity so the watchdog can narrate it with no model call
-  snag()     something went wrong but we're carrying on — the user hears about it NOW
+  say()      a thought — posted if it's the turn's first, otherwise logged
+  waiting()  "still booting, giving it 10 more seconds" — logged; the watchdog covers it
+  doing()    what we're busy with, for the log
+  stage()    how far along we are, which picks the watchdog's wording
+  snag()     something went wrong but we're carrying on — logged, and softens the next tick
   finish()   the final answer; SEALS the turn so nothing can overwrite or follow it
   fail()     the turn died; an honest message instead of an eternal hourglass
   note()     a brand-new message, for problems found after the seal
 
 The watchdog thread wakes every second and, if nothing has been said for `idle_seconds`
-(30 by default), says where we're at and how long it's been. Every write goes through one
-lock and re-checks the seal while holding it, so a watchdog tick can never land after the
-final answer — the ordering that would otherwise leave "still working…" as the last word in
-the thread.
+(30 by default), says roughly how far along we are. Every write goes through one lock and
+re-checks the seal while holding it, so a watchdog tick can never land after the final
+answer — the ordering that would otherwise leave "still working…" as the last word in the
+thread.
 """
 
 from __future__ import annotations
@@ -52,6 +54,24 @@ THINKING_PLACEHOLDER = ":hourglass_flowing_sand: _Thinking…_"
 WORKING = ":hourglass_flowing_sand:"
 SNAG = ":warning:"
 FAILED = ":x:"
+
+# How far along a turn is — the watchdog's wording follows it.
+SETTING_UP = "setting up"     # reading the request, fetching files, before any real work
+HALFWAY = "halfway"           # a tool is running, or we're inspecting before acting
+FINISHING = "finishing"       # the deliverable exists (or the steps are running out)
+
+_PROGRESS = {
+    SETTING_UP: "Still working, just getting set up…",
+    HALFWAY: "Still working, about halfway there…",
+    FINISHING: "Almost done, just a few more steps…",
+}
+HICCUP_LINE = "Ran into a small hiccup, so I'm trying another way — still making progress…"
+LONG_RUN_LINE = ("This one's taking a little longer than usual, but I'm still making "
+                 "progress… Say _stop_ if you'd rather I drop it.")
+
+# The one thing a turn says when it can't go on. Always an apology plus a way forward —
+# never a bare exception, which reads to a teammate as "the bot is broken".
+TRY_AGAIN = "Reply _try again_ and I'll take another run at it, or start a fresh chat if you'd rather."
 
 
 def human(seconds: float) -> str:
@@ -100,7 +120,7 @@ class Reporter:
         self._last_spoke = self._started
         self._last_text: str | None = None
         self._sealed = False
-        self._nudges = 0
+        self._said_first = False      # has the turn's one permanent progress line gone out?
 
         # The message we're still allowed to overwrite, and whether we may. Only scaffolding
         # is overwritable; a real thought is left alone once it's been said.
@@ -108,7 +128,8 @@ class Reporter:
         self._tail_transient = False
 
         self._activity = "getting started"
-        self._hint: str | None = None
+        self._stage = SETTING_UP
+        self._hiccup = False
 
     # ---- lifecycle -------------------------------------------------------------------
 
@@ -157,32 +178,47 @@ class Reporter:
         self.say(msg)
 
     def say(self, msg: str, activity: str | None = None) -> None:
-        """A new thought, as its own message in the thread. Also resets the idle clock."""
+        """A thought. The turn's first one is posted (it replaces the placeholder) so the user
+        sees what the bot is about to do; every later one only goes to the log — a running
+        commentary is exactly the chatter the user asked to be rid of."""
         if activity:
             self.doing(activity)
-        self._write(f"{WORKING} {msg}")
+        with self._lock:
+            first, self._said_first = not self._said_first, True
+        if first:
+            self._write(f"{WORKING} {msg}")
+        else:
+            self._log.info("status (not posted): %s", msg)
 
     def waiting(self, msg: str, activity: str | None = None) -> None:
         """Still on the same thought, still waiting — "the sandbox is booting", "giving it 10
-        more seconds". Replaces the previous transient line rather than stacking up a column of
-        near-identical messages, and the next real thought replaces it in turn."""
+        more seconds". Logged only: a cold start is routine, and if it drags on, the watchdog
+        already tells the user we're still going."""
         if activity:
             self.doing(activity)
-        self._write(f"{WORKING} {msg}", transient=True)
+        self._log.info("status (waiting): %s", msg)
 
-    def doing(self, activity: str, hint: str | None = None) -> None:
-        """Record what we're busy with. Writes nothing — this is what the watchdog narrates
-        if the turn then goes quiet, so it should read as a phrase: "waiting for the code
-        sandbox to boot", "reading plans.pdf"."""
+    def doing(self, activity: str) -> None:
+        """Record what we're busy with, as a phrase ("running `run_code`"). Writes nothing to
+        the thread; the watchdog logs it when the turn goes quiet."""
         with self._lock:
             self._activity = activity
-            self._hint = hint
+
+    def stage(self, stage: str) -> None:
+        """Record how far along we are (SETTING_UP / HALFWAY / FINISHING). Moving on also
+        clears a pending hiccup — whatever went wrong is behind us now."""
+        with self._lock:
+            self._stage = stage
+            self._hiccup = False
 
     def snag(self, msg: str) -> None:
-        """Hit a problem but still trying. Its own message, so it's still there at the end of
-        the turn — the user hears about obstacles as they happen, and can still see them
-        afterwards next to the result they explain."""
-        self._write(f"{SNAG} {msg}")
+        """Hit a problem but still trying. The details go to the log; the user just gets a
+        lighter next progress line ("small hiccup, trying another way"). Most snags are worked
+        around before anyone would have read about them, and when one isn't, the final answer
+        says so."""
+        self._log.info("status (snag): %s", msg)
+        with self._lock:
+            self._hiccup = True
 
     def finish(self, text: str) -> bool:
         """Write the final answer and seal the turn. It replaces a trailing ticker if there is
@@ -205,8 +241,8 @@ class Reporter:
         self.stop()
         if not self.sealed:
             self._log.warning("status: turn ended without a final message; sealing a fallback")
-            self.fail("I stopped without finishing and without an error to explain why — that's "
-                      "a fault on my side, not something you did. Nothing is still running.")
+            self.fail(f"Sorry — I stopped before finishing this, and that's on me, not "
+                      f"anything you did. {TRY_AGAIN}")
 
     def note(self, text: str) -> None:
         """A new message in the thread, allowed even after the seal. For things discovered
@@ -250,16 +286,14 @@ class Reporter:
         return True
 
     def _line(self) -> str:
-        with self._lock:
-            activity, hint, nudges = self._activity, self._hint, self._nudges
-        took = human(self.elapsed())
-        if self.elapsed() >= LONG_RUN_SECONDS:
-            return (f"{WORKING} This is taking longer than usual — still {activity} ({took}). "
-                    f"Say _stop_ if you'd rather I drop it.")
-        line = f"{WORKING} Still on it — {activity} ({took})."
-        if hint and nudges <= 1:
-            line += f" {hint}"
-        return line
+        """Caller holds the lock."""
+        if self._hiccup:
+            line = HICCUP_LINE
+        elif self.elapsed() >= LONG_RUN_SECONDS and self._stage != FINISHING:
+            line = LONG_RUN_LINE
+        else:
+            line = _PROGRESS.get(self._stage, _PROGRESS[HALFWAY])
+        return f"{WORKING} {line}"
 
     def _watch(self) -> None:
         while not self._stop.wait(1.0):
@@ -268,9 +302,11 @@ class Reporter:
                     return
                 if time.monotonic() - self._last_spoke < self._idle:
                     continue
-                self._nudges += 1
-                # Transient: the first tick starts the ticker, later ticks just move its clock
-                # on, and the next real thought (or the answer) takes its place.
+                self._log.info("status: quiet for %s while %s (%s)",
+                               human(time.monotonic() - self._last_spoke), self._activity,
+                               self._stage)
+                # Transient: the first tick posts the progress line, later ticks edit it only
+                # if the wording changed (_raw skips exact repeats), and the answer replaces it.
                 self._raw(self._line(), transient=True)
 
 
@@ -299,9 +335,6 @@ def turn(channel: str, thread_ts: str, say, client, logger):
         # Swallowed deliberately: Bolt's default listener error handler only writes to the log,
         # so re-raising here is exactly the silence this whole change exists to remove.
         logger.exception("turn failed")
-        reporter.fail(
-            f"Something went wrong on my side and I've stopped: `{type(err).__name__}: {err}`. "
-            f"Nothing is still running in the background — ask me again and I'll retry."
-        )
+        reporter.fail(f"Sorry — something went wrong on my end and I had to stop. {TRY_AGAIN}")
     finally:
         reporter.close()

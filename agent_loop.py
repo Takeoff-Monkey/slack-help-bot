@@ -24,6 +24,7 @@ import anthropic
 import sandbox
 import slack_files
 import slack_mcp
+import status
 import tool_registry
 import tool_runner
 
@@ -95,10 +96,11 @@ ASK_USER_TOOL = {
 ACTION_SYSTEM = """You are an AI assistant for Takeoff Monkey that can *perform operations* for teammates, not just answer questions. You have specialized tools plus a `run_code` sandbox.
 
 Keep it SHORT — this is Slack, and every word you write lands in the user's thread:
-- Before you call ANY tool, write ONE short line — roughly 15 words, never more than one sentence — saying what you're about to do, then make the call in the SAME turn. e.g. "On it — running the Schedule Extractor on that PDF." That's it: no plan, no reasoning, no explaining how the tool works. It exists so the user can stop you if it's the wrong thing.
-- When you're done, reply in ONE sentence. A second sentence only if there's a genuine caveat they need (something missing, something you had to assume).
-- Say what you did, not how. No step-by-step recaps, no listing columns or row counts, no describing what's in the file they're about to open, no explaining what they can do with it, no "let me know if you need anything else."
-- The user asked for work, not a report. If you're unsure whether a sentence is needed, cut it.
+- Before your FIRST tool call, write ONE short line — roughly 10 words — saying what you're about to do, then make the call in the SAME turn. e.g. "Running the Schedule Extractor on that PDF." No plan, no reasoning. It exists so the user can stop you if it's the wrong thing.
+- After that first line, make your tool calls WITHOUT writing anything. The user never sees mid-task text — the bot posts its own short progress updates — so don't narrate your next step, your reasoning, or a problem you're working around.
+- When you're done, be direct and plain: "Here's the file." — not "I've got it! Here's the file for the extracted schedule you asked for." Add a second short sentence only for a genuine caveat they need (something missing, something you had to assume), e.g. "Here's the file — 3 rows had no QTY, so I left those blank."
+- No openers or sign-offs ("Got it!", "Sure thing!", "Great news", "let me know if you need anything else"), no restating what they asked, no step-by-step recap, no listing columns or row counts, no describing what's in the file they're about to open.
+- If you're unsure whether a sentence is needed, cut it.
 
 Core rule — do exactly what was asked, then stop:
 - When a *registered tool* matches the request, that is usually ONE call. Pick the tool, call it once, and when it returns status "ok" you are DONE.
@@ -115,31 +117,31 @@ Working with `run_code` — inspect, then act, and always finish the job:
 OCR & scanned images:
 - Check the registered tools FIRST: some accept images, and each one's description says which file types it takes. A tool that covers the request beats raw OCR — the schedule/legend extractor, for one, takes photos and screenshots of a drawing sheet and finds and crops the schedule out of them itself. Only when no registered tool covers what was asked does image OCR fall to you.
 - For any other text or tables out of an image (PNG/JPG) or a scanned / text-less PDF, use `run_code`. Start in the "default" environment: preprocess with `cv2` (grayscale, upscale, threshold) and read with `pytesseract` (Tesseract).
-- Judge the result. If the extracted text comes back garbled, mostly empty, or low-confidence (e.g. low mean word confidence from `pytesseract.image_to_data`), you MAY escalate: tell the user in one short sentence that the quick OCR looked rough and you're trying a more powerful engine, then call `run_code` again with `environment` set to "neural_ocr" (RapidOCR). This is an explicitly allowed second step — the one exception to "don't re-run a succeeded result." Escalate at most once; do not loop.
-- If neural OCR still looks poor, stop and say so plainly — and suggest the original higher-quality source (e.g. the vector PDF instead of a photo) — rather than retrying further.
+- Judge the result. If the extracted text comes back garbled, mostly empty, or low-confidence (e.g. low mean word confidence from `pytesseract.image_to_data`), you MAY escalate: call `run_code` again with `environment` set to "neural_ocr" (RapidOCR). This is an explicitly allowed second step — the one exception to "don't re-run a succeeded result." Escalate at most once; do not loop.
+- If neural OCR still looks poor, stop rather than retrying further: say briefly that the image was too rough to read reliably, and suggest the original higher-quality source (e.g. the vector PDF instead of a photo).
 
 Files & output:
 - Attached files are listed with handles like `file_1`. Pass those handles to a tool's `input_file` field — or, for a tool that takes several files, all of them in one call via its `input_files` field (one call with every file, not one call per file). In `run_code`, the file you name is at env `INPUT_FILE`, and anything you write to env `OUTPUT_DIR` is uploaded to the thread automatically.
 - A *Routing note* in the conversation comes from a tool's own trigger rules (a filename pattern, a phrase in the request). Follow it: use the tool it names, or — when it says the tool needs a file that isn't attached — stop and ask for the file with `ask_user` instead of starting anything.
 - Every file a tool or `run_code` produces is uploaded to the Slack thread for the user automatically. Never re-create, re-deliver, or tell the user where to find a file.
 - `OUTPUT_DIR` is for finished deliverables ONLY. Never write scratch, debug, or intermediate files there — they get uploaded to the user's thread as if they were the work. Use `print()` for anything you just want to see yourself.
-- When finished, reply with the one plain sentence described above. Never paste raw tool JSON.
+- When finished, reply with the short plain line described above. Never paste raw tool JSON.
 
 Deliver results as a FILE — a spreadsheet by default:
 - Any result that is data — rows, tables, lists, extracted values, filtered or cleaned records, counts, comparisons — is delivered as a *spreadsheet file* (`.xlsx`, written to `OUTPUT_DIR`). That is the default output format for this bot, always, unless the user explicitly asked for something else (a PDF, a Word doc, a CSV, or "just tell me in the thread").
-- Never paste the results into your Slack reply as a code block, a table, or a long list. Teammates need to open the output in Excel, not copy it out of chat. Your one-sentence reply names the work; the file carries the data.
+- Never paste the results into your Slack reply as a code block, a table, or a long list. Teammates need to open the output in Excel, not copy it out of chat. Your short reply names the work; the file carries the data.
 - This applies to partial work too. If you can only finish part of it, still write what you have to a spreadsheet and say plainly what's missing — do not paste partial results as text instead.
 - Preserve the source layout when you're transforming a workbook the user gave you: same columns, same order, same headers, so the output drops straight into their process. Keep the original filename with a short suffix (e.g. "… - cleaned.xlsx").
 - Editing a workbook means writing a NEW file to `OUTPUT_DIR`. Never modify the user's original in place.
 
-Errors:
-- If a tool returns an error, you may retry ONCE with corrected inputs, or explain the problem plainly. Do not keep retrying or switch to `run_code` to brute-force around a failure.
-- Startup delays are NOT errors to retry around. The sandbox and the tools run on infrastructure that can take up to a minute to boot when it has gone cold, and the bot already waits for it patiently before every call. If a result says something is still booting or starting up, do NOT immediately call it again — that only makes it slower. Tell the user it needs another moment and stop.
+Errors — keep it light; most users read "I ran into an error" as "the bot is broken":
+- If a tool returns an error, you may retry ONCE with corrected inputs. Do not keep retrying or switch to `run_code` to brute-force around a failure.
+- Problems you work around are yours, not the user's. Don't mention them unless they changed the result — and then phrase it lightly and positively: "Ran into a minor issue with the scan, so I used OCR instead." Never write "error", "failed", or "I can't" about something you got past.
+- Startup delays are NOT errors to retry around. The sandbox and the tools run on infrastructure that can take up to a minute to boot when it has gone cold, and the bot already waits for it patiently before every call. If a result says something is still booting or starting up, do NOT immediately call it again — that only makes it slower. Tell the user it's still warming up and to try again in a minute, and stop.
+- If you truly cannot finish, say so apologetically and plainly, in a sentence or two of everyday language — no error messages, codes, or stack traces — and ALWAYS give them a way forward: try again, send a different or clearer file, tell you a detail only they know, or start a fresh chat. e.g. "Sorry — I couldn't read the QTY column on that scan. Could you send a clearer screenshot, or the original PDF?"
 
 Never go quiet — this matters as much as getting the work right:
 - ALWAYS end your turn with words. Never stop after a tool result without writing a reply; an empty answer leaves the user staring at a spinner with no idea whether you're still working.
-- The moment something goes wrong, say so in that same turn: one short sentence naming what failed and what you're doing about it. Don't discover an obstacle and quietly move on.
-- If you genuinely cannot do what was asked, say plainly what stopped you and what would unblock it (a different file, a tool that doesn't exist, information only they have). "I can't do this because X" is a good answer. Silence is not.
 - Never say something is done when it isn't, and never describe a file as delivered unless a tool actually produced it.
 
 Ask before you act — use the `ask_user` tool:
@@ -220,18 +222,18 @@ def _append_user_text(messages: list, text: str) -> None:
 
 def _model_failure_text(err: Exception, artifacts: list) -> str:
     """An honest, plain reply when the model call itself falls over. Previously this bubbled
-    out of the loop and lost the trace and any files already produced."""
+    out of the loop and lost the trace and any files already produced. The exception goes to
+    the log; the user gets an apology and a way forward, never a stack-trace fragment."""
     if isinstance(err, anthropic.RateLimitError):
-        what = "I'm being rate-limited by the model API"
-    elif isinstance(err, anthropic.APITimeoutError):
-        what = "the model API stopped responding"
-    elif isinstance(err, anthropic.APIError):
-        what = f"the model API errored ({getattr(err, 'message', None) or err})"
+        what = "the AI service is busy right now"
+        retry = "Give it a minute, then reply _try again_ and I'll pick it back up."
     else:
-        what = f"something broke while I was working ({type(err).__name__}: {err})"
+        what = ("the AI service stopped responding" if isinstance(err, anthropic.APITimeoutError)
+                else "the AI service had a problem" if isinstance(err, anthropic.APIError)
+                else "something went wrong on my end")
+        retry = status.TRY_AGAIN
     done = " The file(s) I'd already finished are attached above." if artifacts else ""
-    return (f":x: I've stopped — {what}. Nothing is still running in the background."
-            f"{done} Ask me again and I'll pick it back up.")
+    return f"{status.FAILED} Sorry — I had to stop because {what}.{done} {retry}"
 
 
 def _wrap_up_text(say: str, stop_reason, artifacts: list, last_error: str | None) -> str:
@@ -246,28 +248,29 @@ def _wrap_up_text(say: str, stop_reason, artifacts: list, last_error: str | None
             # The model may well have written "let me try X" — a header makes the state
             # unmistakable whatever it wrote: the last thing that happened was a failure and
             # nothing more is running.
-            return f":warning: I hit a wall on this one and have stopped.\n\n{say}"
+            # No apology of its own: the model's text already carries one.
+            return f"{status.SNAG} I couldn't quite finish this one.\n\n{say}"
         return say
     if last_error:
+        # The raw error is in the log and the trace; to the user it would just read as "broken".
         done = " The file(s) I did finish are attached above." if artifacts else ""
-        return (f":warning: I couldn't finish this one. The last thing I tried failed: "
-                f"{_short(last_error, 400)}{done}\n\nTell me how you'd like me to proceed "
-                f"and I'll take another run at it.")
+        return (f"{status.SNAG} Sorry, I couldn't get this one finished.{done} Reply _try "
+                f"again_ and I'll take another run at it, tell me what to change, or start a "
+                f"fresh chat if you'd rather.")
     if artifacts:
-        return "Done — the file(s) I produced are attached above."
-    return (":warning: I stopped without producing anything, and without an error to explain "
-            "why — that's a fault on my side, not something you did. Ask me again, or rephrase "
-            "what you need, and I'll take another run at it.")
+        return "Here's the file." if len(artifacts) == 1 else "Here are the files."
+    return (f"{status.SNAG} Sorry — I stopped without producing anything, and that's on me, not "
+            f"anything you did. Reply _try again_, rephrase what you need, or start a fresh chat "
+            f"if you'd rather.")
 
 
 def run_agent(client, question, history, staging, tool_specs, reporter, on_artifacts, cancel_event,
               logger, mcp=None, in_dm=False) -> AgentResult:
     """Drive the tool-use loop.
 
-    - reporter: the turn's voice (status.Reporter). `.say()` posts a new thought the user
-      should see now, `.waiting()` restates the one we're already on (it replaces rather than
-      stacks), `.doing()` sets what the 30-second watchdog narrates when the bot goes quiet,
-      `.snag()` the moment something goes wrong.
+    - reporter: the turn's voice (status.Reporter). Only the turn's first `.say()` reaches the
+      thread; `.stage()` sets how far along we are, which is what the 30-second watchdog tells
+      the user; `.snag()` softens its next line. Everything else is for the log.
     - on_artifacts(list): uploads files the moment a tool produces them (output survives a
       later failure or the step cap).
     - cancel_event: a threading.Event-like; if it trips, the loop stops ASAP — including
@@ -349,6 +352,8 @@ def run_agent(client, question, history, staging, tool_specs, reporter, on_artif
             return cancelled_result()
 
         reporter.doing("reading your request" if step == 0 else "working out what to do next")
+        if step == 0:
+            reporter.stage(status.SETTING_UP)
         try:
             kwargs = dict(
                 model=ACTION_MODEL,
@@ -381,7 +386,7 @@ def run_agent(client, question, history, staging, tool_specs, reporter, on_artif
                 mcp = None
                 tool_defs = [t for t in tool_defs if t.get("type") != "mcp_toolset"]
                 system = ACTION_SYSTEM
-                reporter.snag("I can't search Slack right now — carrying on without it.")
+                reporter.snag("Slack search unavailable — carrying on without it.")
                 continue
             # Don't let this escape as a bare exception: the user would get a generic
             # "something went wrong" and we'd lose the trace and any files already made.
@@ -444,10 +449,12 @@ def run_agent(client, question, history, staging, tool_specs, reporter, on_artif
                          "them. Do not answer with a description of what you are about to do.")
             elif last_error:
                 nudge = ("Your last tool call failed and you have stopped without calling another "
-                         "tool, so nothing further will run. If you are giving up, tell the user "
-                         "plainly: what you were trying to do, what went wrong, and what they could "
-                         "do about it. If you meant to keep going, make the tool call NOW. Never "
-                         "describe an action you are not actually taking.")
+                         "tool, so nothing further will run. If you meant to keep going, make the "
+                         "tool call NOW. If you are giving up, tell the user in a sentence or two "
+                         "of plain, everyday language — apologetic, no error messages — what "
+                         "stopped you, and give them a way forward (try again, a different file, "
+                         "a detail only they know, or a fresh chat). Never describe an action you "
+                         "are not actually taking.")
             else:
                 nudge = None
             if (nudge and msg.content and not tool_calls and not nudged
@@ -466,8 +473,9 @@ def run_agent(client, question, history, staging, tool_specs, reporter, on_artif
             return AgentResult(text=text, artifacts=artifacts, work_dirs=work_dirs, trace=trace,
                                failed=not say and bool(last_error))
 
-        # Surface the model's friendly preamble ("running the Schedule Extractor now…") so the
-        # user can see what's happening and stop it if it's wrong.
+        # Surface the model's preamble ("Running the Schedule Extractor on that PDF.") so the
+        # user can see what's happening and stop it if it's wrong. Only the turn's first one
+        # reaches the thread; the reporter logs the rest.
         if say:
             reporter.say(say)
 
@@ -490,15 +498,15 @@ def run_agent(client, question, history, staging, tool_specs, reporter, on_artif
                                    trace=trace, awaiting_user=True)
 
             if not say:
-                reporter.say(f"Running {name}…")
-            reporter.doing(f"running `{name}`",
-                           "Big files can take a couple of minutes." if staging.files else None)
+                reporter.say("On it…" if name == "run_code" else f"Running {name}…")
+            reporter.doing(f"running `{name}`")
+            if last_error is None:
+                reporter.stage(status.HALFWAY)
             trace.append(f"CALL[{step + 1}] {name}({_short(json.dumps(block.input), 300)})")
             used_a_tool = True
 
-            # notify= is the "still booting up, giving it 10 more seconds" channel: the same
-            # thought restated with a new number, so it uses waiting() to replace its previous
-            # line rather than posting a fresh message per retry.
+            # notify= is the "still booting up, giving it 10 more seconds" channel. waiting()
+            # only logs it — a cold start is routine, and the watchdog covers a long one.
             def _do(block=block, name=name):
                 if name == "run_code":
                     return sandbox.run_code(block.input, staging, logger, notify=reporter.waiting)
@@ -526,14 +534,19 @@ def run_agent(client, question, history, staging, tool_specs, reporter, on_artif
                         [a.get("filename") for a in res.artifacts])
             trace.append(f"RESULT {name}: status={res.status} | {res.summary or res.error} "
                          f"| artifacts={[a.get('filename') for a in res.artifacts]}")
-            # Tell the user about the obstacle NOW, rather than letting it surface only if the
-            # model happens to mention it (or vanish entirely if the model just stops).
+            # A failed tool softens the next progress line rather than posting the raw error:
+            # the model usually gets past it, and if it doesn't, the final answer says so.
             if res.status == "error":
                 last_error = res.error or "unknown error"
                 reporter.snag(f"`{name}` hit a problem: {_short(last_error, 180)}")
                 reporter.doing("working out how to get around that")
             else:
                 last_error = None      # a later success clears an earlier failure
+                # A file in hand, or a registered tool's finished work, means all that's left
+                # is the reply. A run_code call that produced nothing was probably a look
+                # inside the input — still the middle of the job.
+                reporter.stage(status.FINISHING if res.artifacts or name != "run_code"
+                               else status.HALFWAY)
             emit(res.artifacts)   # upload now — survives any later failure/timeout
             if res.work_dir:
                 work_dirs.append(res.work_dir)
@@ -553,6 +566,7 @@ def run_agent(client, question, history, staging, tool_specs, reporter, on_artif
         remaining = MAX_TOOL_ITERATIONS - (step + 1)
         if 0 < remaining <= ENDGAME_STEPS and not endgame_warned:
             endgame_warned = True
+            reporter.stage(status.FINISHING)
             trace.append(f"ENDGAME[{step + 1}]: {remaining} step(s) left")
             logger.info("agent: %d step(s) left; telling the model to land it", remaining)
             _append_user_text(messages, (
@@ -566,23 +580,26 @@ def run_agent(client, question, history, staging, tool_specs, reporter, on_artif
     # Hit the iteration cap — one no-tools wrap-up turn for a coherent reply.
     if cancel_event.is_set():
         return cancelled_result()
-    reporter.say("Wrapping up…")
     reporter.doing("writing up what I managed to do")
+    reporter.stage(status.FINISHING)
     logger.info("agent: hit step cap (%d); forcing finalize", MAX_TOOL_ITERATIONS)
     delivered = " The files I completed are attached above." if artifacts else ""
-    snag = f" The last thing that went wrong: {_short(last_error, 300)}." if last_error else ""
+    if last_error:
+        trace.append(f"LAST ERROR: {_short(last_error, 300)}")
     # A system-prompt suffix was not enough: mid-debugging, the model answered "Let me retry
     # loading it now." and that became the last thing the user ever saw. The instruction now
     # goes into the conversation itself, right where the model is looking, and the header
     # below is fixed text so the state is unmistakable whatever it writes.
     _append_user_text(messages, (
         "You have used every step you had. Nothing further will run this turn, so do NOT "
-        "describe what you will do next — there is no next. Tell the user in TWO sentences at "
-        "most: what stopped you, and what they could do now. No recap of the steps you took, "
-        "no apology paragraph. And do NOT dump the work into your reply as a code block, "
-        "table, or long list — results belong in a file, and no file can be produced now."
+        "describe what you will do next — there is no next. Tell the user in TWO short "
+        "sentences at most, in plain everyday language with no error messages: what stopped "
+        "you, and what they could do now (try again, a different or clearer file, a detail only "
+        "they know, or a fresh chat). No recap of the steps you took. And do NOT dump the work "
+        "into your reply as a code block, table, or long list — results belong in a file, and "
+        "no file can be produced now."
     ))
-    header = f":warning: I ran out of steps before I could finish this.{delivered}"
+    header = f"{status.SNAG} Sorry — this one needed more steps than I had, so I had to stop.{delivered}"
     try:
         # `tools` stays because the history holds tool_use/tool_result blocks; tool_choice
         # "none" is what actually keeps the model from calling anything.
@@ -597,9 +614,9 @@ def run_agent(client, question, history, staging, tool_specs, reporter, on_artif
             timeout=MODEL_TIMEOUT,
         )
         summary = _text_of(final)
-        text = f"{header}\n\n{summary}" if summary else f"{header}{snag}"
+        text = f"{header}\n\n{summary}" if summary else f"{header} {status.TRY_AGAIN}"
     except Exception:
         logger.exception("force-finalize call failed")
-        text = f"{header}{snag}"
+        text = f"{header} {status.TRY_AGAIN}"
     trace.append(f"FINALIZE: {text}")
     return AgentResult(text=text, artifacts=artifacts, work_dirs=work_dirs, trace=trace)
