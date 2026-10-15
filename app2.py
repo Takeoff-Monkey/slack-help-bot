@@ -285,7 +285,7 @@ def get_conversation_history(channel: str, thread_ts: str, current_ts: str, logg
             continue
         is_bot = msg.get("user") == BOT_USER_ID or bool(msg.get("bot_id"))
         if is_bot:
-            text = SOURCES_FOOTER_RE.sub("", text)
+            text = status.strip_icon(SOURCES_FOOTER_RE.sub("", text))
         else:
             text = strip_mention(text)
         # Say which files went with which message. Without this the model (and the selector)
@@ -635,8 +635,8 @@ def respond_to_question(question, history, staging, prefetched_skill_ids, report
         return agent_loop.AgentResult(text=answer)
     except anthropic.RateLimitError:
         logger.exception("Anthropic rate limit hit")
-        # Not the hourglass, however apt: that's the progress-line prefix, and a line starting
-        # with it is treated as scaffolding and dropped from thread history (status.is_progress_line).
+        # Not the working icon: that's the progress-line prefix, and a line starting with it is
+        # treated as scaffolding and dropped from thread history (status.is_progress_line).
         return agent_loop.AgentResult(
             text=":warning: Sorry — the AI service is busy right now. Give it a minute, then "
                  "ask me again.", failed=True)
@@ -785,7 +785,8 @@ def _run_turn(question, channel, thread_ts, files, history, say, client, logger,
                 why = ("\n" + "\n".join(f"- {r}" for r in staging.skipped)) if staging.skipped else ""
                 reporter.fail(
                     f"Sorry — I couldn't open the file(s) you sent:{why}\n\nCould you try "
-                    f"re-uploading them, or tell me what you'd like me to do without them?"
+                    f"re-uploading them, or tell me what you'd like me to do without them?",
+                    icon=status.SNAG,
                 )
                 return
 
@@ -798,10 +799,18 @@ def _run_turn(question, channel, thread_ts, files, history, say, client, logger,
         if cancel_event.is_set() and not result.cancelled:
             logger.info("Turn completed after a cancel request — discarding the answer")
             result = agent_loop.AgentResult(
-                text=":octagonal_sign: _Cancelled._", artifacts=result.artifacts,
+                text=f"{status.CANCELLED} _Cancelled._", artifacts=result.artifacts,
                 work_dirs=result.work_dirs, trace=result.trace, cancelled=True,
             )
-        text = result.text or "Done."
+        # Lead with the icon that says how it went: asked a question, failed, or done. Texts
+        # that already carry one (snags, failures, a cancel) keep theirs.
+        if result.awaiting_user:
+            icon = status.NEEDS_INPUT
+        elif result.failed:
+            icon = status.FAILED
+        else:
+            icon = status.DONE
+        text = status.with_icon(result.text or "Done.", icon)
         if not reporter.finish(text):
             # finish() already retries as a new message if editing fails, so False means Slack
             # refused both. The answer still has to reach the user — try once more ourselves.
@@ -860,7 +869,7 @@ def _maybe_cancel(question, channel, thread_ts, say, logger) -> bool:
     n = tasks.cancel(key)
     logger.info("Cancel requested — tripped %d running task(s) on %s", n, key)
     say(
-        text=":octagonal_sign: Okay, I've stopped that — let me know what you'd like instead.",
+        text=f"{status.CANCELLED} Okay, I've stopped that — let me know what you'd like instead.",
         thread_ts=thread_ts,
     )
     return True

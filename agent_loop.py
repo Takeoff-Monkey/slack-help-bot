@@ -342,7 +342,7 @@ def run_agent(client, question, history, staging, tool_specs, reporter, on_artif
         logger.info("agent: cancelled by user")
         trace.append("CANCELLED by user")
         return AgentResult(
-            text=":octagonal_sign: _Cancelled._",
+            text=f"{status.CANCELLED} _Cancelled._",
             artifacts=artifacts, work_dirs=work_dirs, trace=trace, cancelled=True,
         )
 
@@ -493,7 +493,7 @@ def run_agent(client, question, history, staging, tool_specs, reporter, on_artif
             if name == "ask_user":
                 asked = (block.input or {}).get("question") or "Could you tell me a bit more about what you'd like?"
                 why = (block.input or {}).get("why")
-                text = f":raising_hand: {asked}" + (f"\n\n_{why}_" if why else "")
+                text = f"{status.NEEDS_INPUT} {asked}" + (f"\n\n_{why}_" if why else "")
                 trace.append(f"ASK_USER[{step + 1}]: {asked}")
                 logger.info("agent: stopping to ask the user | %r", _short(asked, 160))
                 return AgentResult(text=text, artifacts=artifacts, work_dirs=work_dirs,

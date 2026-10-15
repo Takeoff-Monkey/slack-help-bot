@@ -50,10 +50,20 @@ IDLE_SECONDS = int(os.environ.get("STATUS_IDLE_SECONDS", "30"))
 # Past this, the watchdog stops saying "still working" and admits it's taking unusually long.
 LONG_RUN_SECONDS = int(os.environ.get("STATUS_LONG_RUN_SECONDS", "180"))
 
-THINKING_PLACEHOLDER = ":hourglass_flowing_sand: _Thinking…_"
-WORKING = ":hourglass_flowing_sand:"
-SNAG = ":warning:"
-FAILED = ":x:"
+# Every message the bot posts starts with one of these, so a teammate can tell where things
+# stand from the icon alone, before reading a word:
+WORKING = ":gear:"                 # still thinking / working — nothing to do yet
+DONE = ":white_check_mark:"        # finished, here's the result
+NEEDS_INPUT = ":question:"         # stopped to ask the user something
+SNAG = ":warning:"                 # partly done, or needs them to retry / send something else
+FAILED = ":x:"                     # it truly couldn't go on
+CANCELLED = ":octagonal_sign:"
+THINKING_PLACEHOLDER = f"{WORKING} _Thinking…_"
+# Progress lines from before the gear, still in older threads (see is_progress_line).
+_LEGACY_WORKING = ":hourglass_flowing_sand:"
+# Any of these at the start of a message means it already says where things stand.
+_STATUS_ICONS = (WORKING, DONE, NEEDS_INPUT, SNAG, FAILED, CANCELLED, _LEGACY_WORKING,
+                 ":wave:", ":raising_hand:")
 
 # How far along a turn is — the watchdog's wording follows it.
 SETTING_UP = "setting up"     # reading the request, fetching files, before any real work
@@ -95,7 +105,28 @@ def is_progress_line(text: str) -> bool:
     with WORKING, or it would be filtered out of its own thread's history.
     """
     t = (text or "").strip()
-    return not t or t == THINKING_PLACEHOLDER or t.startswith(WORKING)
+    return not t or t == THINKING_PLACEHOLDER or t.startswith((WORKING, _LEGACY_WORKING))
+
+
+def has_icon(text: str) -> bool:
+    return (text or "").lstrip().startswith(_STATUS_ICONS)
+
+
+def with_icon(text: str, icon: str) -> str:
+    """Prefix a final message with its status icon, unless it already leads with one (failure
+    and snag texts are built with theirs)."""
+    text = (text or "").strip()
+    return text if has_icon(text) else f"{icon} {text}"
+
+
+def strip_icon(text: str) -> str:
+    """The message without its leading status icon — for thread history, so the model reads
+    what was said rather than learning to type the icons itself."""
+    t = (text or "").lstrip()
+    for icon in _STATUS_ICONS:
+        if t.startswith(icon):
+            return t[len(icon):].lstrip()
+    return t
 
 
 class Reporter:
@@ -230,10 +261,11 @@ class Reporter:
             self._sealed = True
             return self._raw(text)
 
-    def fail(self, msg: str) -> None:
+    def fail(self, msg: str, icon: str = FAILED) -> None:
         """The turn is over and it did not work. Never let this be swallowed — an unexplained
-        stall is exactly what the user complained about."""
-        self.finish(f"{FAILED} {msg}")
+        stall is exactly what the user complained about. Pass icon=SNAG when the way forward is
+        simply something the user can send (a re-upload), rather than a real breakdown."""
+        self.finish(f"{icon} {msg}")
 
     def close(self) -> None:
         """Stop the watchdog and, if nothing ever sealed this turn, seal it with an honest

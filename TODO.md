@@ -22,9 +22,9 @@
             - ~~it should always give the user an option(s) for how to resolve the issue~~
     - ~~it should be more concise in its regular responses, and less conversational~~
         - ~~instead of "I've got it! Here's the file for the extracted schedule you asked for" it should just say "Here's the file"~~
-7. **message icons**
-    - these will help the user be able to see status as quickly as possible, even before reading the message
-    - every message during it's thought process should be prefaced with an emoji, like maybe a gear or thinking icon
-    - its success output message should use a success emoji, like a green checkbox or the tada icon
-    - needing feedback should preface with a question mark or warning icon or similar to indicate it needs something from the user
-    - a true failure/emergency output message should use a failure emoji, like a red x
+7. ~~**message icons**~~ → `status.py` (2026-10-15)
+    - ~~these will help the user be able to see status as quickly as possible, even before reading the message~~
+    - ~~every message during it's thought process should be prefaced with an emoji, like maybe a gear or thinking icon~~
+    - ~~its success output message should use a success emoji, like a green checkbox or the tada icon~~
+    - ~~needing feedback should preface with a question mark or warning icon or similar to indicate it needs something from the user~~
+    - ~~a true failure/emergency output message should use a failure emoji, like a red x~~
