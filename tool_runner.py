@@ -28,14 +28,14 @@ TOOL_BACKEND = os.environ.get("TOOL_BACKEND", "local")
 # function that has gone cold needs tens of seconds to pull its image and boot. Two knobs:
 #   GRACE     — extra read-timeout on top of the function's own timeout, because that boot
 #               happens INSIDE the invoke: the client must be willing to wait for boot + run.
-#   MAX_WAIT  — total time we'll spend waiting *between* attempts when Lambda answers "not
-#               ready / throttled" instead of running (see invoke_lambda).
+#   ATTEMPTS  — how many times we'll invoke when Lambda answers "not ready / throttled"
+#               instead of running, backing off BACKOFF seconds between tries (see
+#               invoke_lambda). 3 tries with a 15s then 20s back-off = ~35s of patience.
 LAMBDA_COLD_START_GRACE = int(os.environ.get("LAMBDA_COLD_START_GRACE_SECONDS", "90"))
-LAMBDA_COLD_START_MAX_WAIT = int(os.environ.get("LAMBDA_COLD_START_MAX_WAIT_SECONDS", "65"))
-
-# Escalating waits between attempts, trimmed to MAX_WAIT. Deliberately starts at 5s, not ~1s:
-# a booting container gains nothing from being asked again immediately.
-_COLD_START_STEPS = (5, 10, 20, 30)
+LAMBDA_COLD_START_ATTEMPTS = max(1, int(os.environ.get("LAMBDA_COLD_START_ATTEMPTS", "3")))
+LAMBDA_COLD_START_BACKOFF = tuple(
+    int(s) for s in os.environ.get("LAMBDA_COLD_START_BACKOFF_SECONDS", "15,20").split(",") if s.strip()
+) or (15,)
 
 # Lambda error codes that mean "not ready yet, ask again" rather than "this call is wrong".
 # Anything else (bad payload, AccessDenied, ResourceNotFound) fails immediately — no amount
@@ -43,6 +43,10 @@ _COLD_START_STEPS = (5, 10, 20, 30)
 _NOT_READY_CODES = {
     "TooManyRequestsException",     # throttled — typical when a cold start bursts concurrency
     "ResourceNotReadyException",    # function/ENI still initializing after idle
+    # "Lambda is initializing your function. It will be ready to invoke shortly." — a function
+    # that went Inactive (or was just deployed) sits in Pending for a while. On 2026-10-09 this
+    # wasn't listed, so it went straight to the model, which retried 2s later and gave up.
+    "CodeArtifactUserPendingException",
     "ResourceConflictException",    # function still updating (e.g. just after a deploy)
     "ServiceException",             # transient Lambda-side 500
     "ServiceUnavailableException",
@@ -69,19 +73,21 @@ def _not_ready(err: Exception) -> bool:
     if isinstance(err, (ConnectTimeoutError, ConnectionClosedError, EndpointConnectionError)):
         return True
     if isinstance(err, ClientError):
-        return err.response.get("Error", {}).get("Code") in _NOT_READY_CODES
+        e = err.response.get("Error", {})
+        if e.get("Code") in _NOT_READY_CODES:
+            return True
+        # Catch-all for the other *Pending* codes Lambda uses while a function initializes
+        # (they vary by package type and change over time); the message is what's stable.
+        return "is initializing your function" in (e.get("Message") or "")
     return False
 
 
 def _cold_start_waits() -> list[int]:
-    waits, spent = [], 0
-    for step in _COLD_START_STEPS:
-        if spent >= LAMBDA_COLD_START_MAX_WAIT:
-            break
-        step = min(step, LAMBDA_COLD_START_MAX_WAIT - spent)
-        waits.append(step)
-        spent += step
-    return waits
+    """Seconds to back off before each retry: one entry per attempt after the first, reusing
+    the last back-off if ATTEMPTS outruns the list."""
+    n = LAMBDA_COLD_START_ATTEMPTS - 1
+    steps = LAMBDA_COLD_START_BACKOFF
+    return [steps[min(i, len(steps) - 1)] for i in range(n)]
 
 
 def invoke_lambda(function_name: str, payload: dict, read_timeout: int, logger,
@@ -90,8 +96,8 @@ def invoke_lambda(function_name: str, payload: dict, read_timeout: int, logger,
 
     Lambda answers a not-ready/throttled invoke in milliseconds. Handing that straight back
     to the model made it re-run the tool about a second later — hammering a function that
-    only needed time to boot. So the waiting happens here, in escalating steps, and the model
-    only ever sees the result of an attempt that actually ran.
+    only needed time to boot. So the waiting happens here — up to ATTEMPTS tries, backing off
+    15–20s between them — and the model only ever sees the result of an attempt that ran.
 
     `notify(msg)` (optional) surfaces the wait to the user instead of leaving them staring at
     a silent placeholder. Raises ColdStartTimeout if the budget runs out; every other
@@ -123,7 +129,8 @@ def invoke_lambda(function_name: str, payload: dict, read_timeout: int, logger,
                 raise
             last_err = err
     raise ColdStartTimeout(
-        f"{label} was still starting up after {waited}s of waiting ({last_err})."
+        f"{label} was still starting up after {LAMBDA_COLD_START_ATTEMPTS} tries over "
+        f"{waited}s of waiting ({last_err})."
     ) from last_err
 
 

@@ -319,13 +319,14 @@ heroku logs --tail -a slack-help-bot     # look for: Discovered tool 'schedule-e
 The tool/sandbox Lambdas are container images, so one that has gone cold needs tens of
 seconds to pull and boot. The bot handles that itself: it pings the sandbox awake at the
 start of an action turn, waits for that boot before invoking for real, and if Lambda answers
-"not ready / throttled" it backs off in escalating steps (5s → 10s → 20s → 30s) instead of
-retrying instantly.
+"not ready / throttled / initializing" it backs off 15s, then 20s, and gives up after 3 tries
+instead of retrying instantly.
 
 | Var | Default | What it does |
 |---|---|---|
 | `LAMBDA_COLD_START_GRACE_SECONDS` | `90` | Read-timeout headroom on top of each function's own timeout (the boot happens *inside* the invoke). Also caps how long the bot waits on a warm-up ping. |
-| `LAMBDA_COLD_START_MAX_WAIT_SECONDS` | `65` | Total time spent waiting *between* attempts before giving up with "still starting up". |
+| `LAMBDA_COLD_START_ATTEMPTS` | `3` | Invokes to try when Lambda answers "not ready" before giving up with "still starting up". |
+| `LAMBDA_COLD_START_BACKOFF_SECONDS` | `15,20` | Back-off before each retry (the last value repeats if there are more attempts). |
 | `SANDBOX_PREWARM` | `1` | Set `0` to stop pinging the sandbox awake at the start of an action turn. |
 | `SANDBOX_PREWARM_TTL_SECONDS` | `240` | Don't re-ping a sandbox warmed this recently. |
 
