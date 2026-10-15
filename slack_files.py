@@ -52,6 +52,24 @@ class StagedFile:
     mimetype: str
     ref: str             # local absolute path (local) | S3 key (lambda)
     size: int
+    # Where it came from in the thread (see ThreadFile): CURRENT, EARLIER_USER or BOT_OUTPUT.
+    origin: str = "current"
+    msg_ts: str = ""     # ts of the Slack message it was posted with
+
+
+# Where a staged file came from. The model is told, so it can tell "the revised screenshot
+# you just sent" from "the one you sent an hour ago" from "the spreadsheet I gave you".
+CURRENT = "current"            # attached to the message being answered
+EARLIER_USER = "earlier_user"  # the user attached it to an earlier message in the thread
+BOT_OUTPUT = "bot_output"      # the bot produced and uploaded it earlier in the thread
+
+
+@dataclass
+class ThreadFile:
+    """A Slack file dict plus where in the thread it was posted."""
+    file: dict
+    origin: str
+    msg_ts: str = ""
 
 
 @dataclass
@@ -63,12 +81,33 @@ class Staging:
     # Attachments we could not stage, as "name (why)". Surfaced to the model and the user —
     # dropping them silently made the bot behave as if nothing had been attached at all.
     skipped: list[str] = field(default_factory=list)
-    # True when the files came from earlier in the thread rather than this message, so the
-    # model knows to check it's working on the one the user actually meant.
-    carried_forward: bool = False
+    # The same for files from EARLIER in the thread. Kept apart: the user didn't send them
+    # this turn, so they only matter if the request turns out to need one.
+    skipped_earlier: list[str] = field(default_factory=list)
+    # Earlier files in the thread that weren't staged because of THREAD_FILE_LIMIT.
+    omitted_earlier: int = 0
 
     def by_handle(self) -> dict[str, StagedFile]:
         return {f.handle: f for f in self.files}
+
+    @property
+    def carried_forward(self) -> bool:
+        """Nothing attached to this message, but there are files from earlier in the thread."""
+        return bool(self.files) and not any(f.origin == CURRENT for f in self.files)
+
+    def focus(self) -> list[StagedFile]:
+        """The files this turn is most likely about: whatever is attached to this message, or
+        failing that, the user's most recent upload. Tool trigger rules (routing notes) and the
+        unreadable-format check look only at these — an Arazoza worksheet from three requests
+        ago, or the bot's own formatted copy of it, shouldn't steer what happens now."""
+        current = [f for f in self.files if f.origin == CURRENT]
+        if current:
+            return current
+        earlier = [f for f in self.files if f.origin == EARLIER_USER]
+        if not earlier:
+            return []
+        newest = earlier[0].msg_ts      # earlier files are staged newest first
+        return [f for f in earlier if f.msg_ts == newest]
 
 
 def _download(url: str, token: str) -> bytes:
@@ -79,10 +118,12 @@ def _download(url: str, token: str) -> bytes:
         return r.read()
 
 
-def stage_attachments(event_files: list[dict], token: str, backend: str, logger) -> Staging:
+def stage_attachments(event_files: list, token: str, backend: str, logger) -> Staging:
     """Download each attachment and stage it for the configured backend. Returns a
     Staging whose .files carry handles the model can reference. Files that fail to
-    download or exceed MAX_FILE_BYTES are skipped (logged)."""
+    download or exceed MAX_FILE_BYTES are skipped (logged).
+
+    Takes plain Slack file dicts (all treated as attached to this message) or ThreadFiles."""
     if backend == "lambda":
         if not SCRATCH_S3_BUCKET:
             logger.error("TOOL_BACKEND=lambda but SCRATCH_S3_BUCKET is unset — cannot stage files")
@@ -92,27 +133,32 @@ def stage_attachments(event_files: list[dict], token: str, backend: str, logger)
         staging = Staging(backend="local", root=tempfile.mkdtemp(prefix="tmbot-"), bucket=None)
         s3 = None
 
-    for i, f in enumerate(event_files, start=1):
+    for i, item in enumerate(event_files, start=1):
+        if isinstance(item, ThreadFile):
+            f, origin, msg_ts = item.file, item.origin, item.msg_ts
+        else:
+            f, origin, msg_ts = item, CURRENT, ""
+        skipped = staging.skipped if origin == CURRENT else staging.skipped_earlier
         url = f.get("url_private_download") or f.get("url_private")
         name = f.get("name") or f.get("title") or f"file_{i}"
         size = int(f.get("size") or 0)
         if not url:
             logger.warning("Attachment %r has no url_private — skipping", name)
-            staging.skipped.append(f"{name} (Slack gave me no download link)")
+            skipped.append(f"{name} (Slack gave me no download link)")
             continue
         if size and size > MAX_FILE_BYTES:
             logger.warning("Attachment %r is %d bytes (> cap %d) — skipping", name, size, MAX_FILE_BYTES)
-            staging.skipped.append(f"{name} (it's {size // (1024 * 1024)} MB, over my {MAX_FILE_BYTES // (1024 * 1024)} MB limit)")
+            skipped.append(f"{name} (it's {size // (1024 * 1024)} MB, over my {MAX_FILE_BYTES // (1024 * 1024)} MB limit)")
             continue
         try:
             data = _download(url, token)
         except Exception:
             logger.exception("Failed to download attachment %r", name)
-            staging.skipped.append(f"{name} (the download from Slack failed)")
+            skipped.append(f"{name} (the download from Slack failed)")
             continue
         if len(data) > MAX_FILE_BYTES:
             logger.warning("Attachment %r exceeded cap after download — skipping", name)
-            staging.skipped.append(f"{name} (over my {MAX_FILE_BYTES // (1024 * 1024)} MB limit)")
+            skipped.append(f"{name} (over my {MAX_FILE_BYTES // (1024 * 1024)} MB limit)")
             continue
 
         handle = f"file_{i}"
@@ -136,7 +182,8 @@ def stage_attachments(event_files: list[dict], token: str, backend: str, logger)
                 out.write(data)
 
         staging.files.append(
-            StagedFile(handle=handle, filename=name, mimetype=f.get("mimetype") or "", ref=ref, size=len(data))
+            StagedFile(handle=handle, filename=name, mimetype=f.get("mimetype") or "", ref=ref,
+                       size=len(data), origin=origin, msg_ts=msg_ts)
         )
         logger.info("Staged attachment %s (%s, %d bytes) as %s", handle, name, len(data), ref)
 
@@ -147,14 +194,40 @@ def attachments_for_prompt(staging: Staging) -> str:
     """A line injected into the user turn so the model knows what files exist and how to
     name them in tool inputs. Never leaks paths/keys."""
     parts = []
-    if staging.files:
-        lines = [f"- {f.handle}: {f.filename} ({f.mimetype or 'unknown type'})" for f in staging.files]
-        header = "Attached files (refer to these by handle in tool inputs):"
-        if staging.carried_forward:
-            header = ("Files carried over from EARLIER in this thread (the user did not attach "
-                      "anything to this message). If it isn't obvious this is the file they mean, "
-                      "ask them first with `ask_user`:")
-        parts.append(header + "\n" + "\n".join(lines))
+
+    def line(f: StagedFile) -> str:
+        who = {EARLIER_USER: " — uploaded by the user earlier in this thread",
+               BOT_OUTPUT: " — YOUR OWN earlier output, which you sent them in this thread"}
+        return f"- {f.handle}: {f.filename} ({f.mimetype or 'unknown type'}){who.get(f.origin, '')}"
+
+    current = [f for f in staging.files if f.origin == CURRENT]
+    earlier = [f for f in staging.files if f.origin != CURRENT]
+    if current:
+        parts.append("Attached to THIS message (refer to files by handle in tool inputs):\n"
+                     + "\n".join(line(f) for f in current))
+    if earlier:
+        if current:
+            header = ("Also in this thread, from earlier (newest first). A file just attached "
+                      "that looks like one of these — same name, same schedule, a fresh "
+                      "screenshot of the same thing — is a REVISED version: work on the new one "
+                      "and treat the old one as replaced, unless they say otherwise. Use an "
+                      "earlier file only when the request needs it (\"compare with the last "
+                      "one\", \"add this to the sheet you made\"):")
+        else:
+            header = ("The user attached nothing to this message, but these files are in the "
+                      "thread from earlier (newest first; refer to them by handle). Follow-ups "
+                      "like \"it\", \"the file\", \"the spreadsheet you sent\" or \"change column "
+                      "B\" mean one of these — usually the newest one that fits, and your own "
+                      "output when they're asking you to fix or change what you made. If it's "
+                      "genuinely unclear which file they mean, ask with `ask_user`:")
+        parts.append(header + "\n" + "\n".join(line(f) for f in earlier))
+    if staging.skipped_earlier:
+        parts.append("These earlier files from the thread couldn't be loaded. Only if the request "
+                     "needs one, ask them to re-attach it:\n"
+                     + "\n".join(f"- {x}" for x in staging.skipped_earlier))
+    if staging.omitted_earlier:
+        parts.append(f"({staging.omitted_earlier} older file(s) from this thread aren't loaded. "
+                     "If they need one of those, ask them to re-attach it.)")
     if staging.skipped:
         parts.append("I could NOT get hold of these attachments — tell the user, plainly, that "
                      "they didn't come through:\n" + "\n".join(f"- {s}" for s in staging.skipped))

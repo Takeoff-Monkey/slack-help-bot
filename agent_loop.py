@@ -304,10 +304,12 @@ def run_agent(client, question, history, staging, tool_specs, reporter, on_artif
     attach_note = slack_files.attachments_for_prompt(staging)
     # Tool-declared triggers (tool.json "triggers") -> a routing note: "this attachment's name
     # says it's for tool X", or "this request needs a file and none is attached, so ask".
-    routing = tool_registry.routing_note(tool_specs, question, staging.files if staging else [])
+    # Both notes look only at the files this turn is about (staging.focus()), not every file
+    # loaded from earlier in the thread.
+    routing = tool_registry.routing_note(tool_specs, question, staging.focus() if staging else [])
     # Deterministic up-front check: an attachment in a format nothing here can open. Said now,
     # in one sentence, instead of discovered over five failed calls (see sandbox.capability_note).
-    capability = sandbox.capability_note(staging.files if staging else [])
+    capability = sandbox.capability_note(staging.focus() if staging else [])
     user_turn = "\n\n".join(part for part in (question, attach_note, routing, capability) if part)
     messages = _normalize(list(history) + [{"role": "user", "content": user_turn}])
 

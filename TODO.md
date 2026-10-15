@@ -5,11 +5,11 @@
         - these schedules will be images, the names corresponding to 
 3. ~~schedule-extractor widget is relying on schedule headers in images~~ → `tools/schedule-extractor/main2.py` (2026-10-14)
     - ~~images are most often screenshots, so it shouldn't look for headers~~
-4. wait for warm load
-    - the bot impatiently tries to use the sandbox before it's ready; if it's not ready right when it goes to use it, it needs to back off for 15-20 seconds and then try again
-    - it should give a max of 3 tries before giving up
-5. needs to be able to see all documents in the chat
-    - currently if the user asks a follow-up on the bot's output file, or if the user posts a revised file/screenshot, the bot trips up
+4. ~~wait for warm load~~ → `tool_runner.py` (2026-10-15)
+    - ~~the bot impatiently tries to use the sandbox before it's ready; if it's not ready right when it goes to use it, it needs to back off for 15-20 seconds and then try again~~
+    - ~~it should give a max of 3 tries before giving up~~
+5. ~~needs to be able to see all documents in the chat~~ → `app2.py` + `slack_files.py` (2026-10-15)
+    - ~~currently if the user asks a follow-up on the bot's output file, or if the user posts a revised file/screenshot, the bot trips up~~
 6. ~~the bot needs to be less talkative with its responses overall~~ → `status.py` + `agent_loop.py` (2026-10-14)
     - ~~it needs to post fewer status updates~~
         - ~~if it's gone 30 seconds without an update, it should post something concise like "Still working, about halfway there..." or "Almost done, just a few more steps...", depending on what's appropriate~~

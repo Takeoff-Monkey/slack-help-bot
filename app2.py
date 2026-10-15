@@ -141,6 +141,9 @@ MAX_HISTORY_MESSAGES = 10
 # lines in the thread as well as its answer, so fetching MAX_HISTORY_MESSAGES + 1 would come
 # back as mostly scaffolding and the real conversation would be filtered away to nothing.
 HISTORY_FETCH_LIMIT = 100
+# How many files from EARLIER in a thread an action turn loads alongside this message's own
+# attachments (newest first). Each one is a download, so a long thread doesn't stage them all.
+THREAD_FILE_LIMIT = int(os.environ.get("THREAD_FILE_LIMIT", "8"))
 
 SLACK_MENTION_RE = re.compile(r"<@[A-Z0-9]+>")
 STYLE_BLOCK_RE = re.compile(r"<style[^>]*>.*?</style>", re.IGNORECASE | re.DOTALL)
@@ -198,6 +201,7 @@ SELECTOR_SYSTEM = f"""You help an AI Slack bot triage a teammate's LATEST messag
 
 1) INTENT — classify what they want:
    - "action": they want the bot to DO something to a file or produce an output — e.g. extract tables/schedules from an attached PDF, highlight text, convert/split/merge a file — or they explicitly name one of the runnable tools below. If a file is attached and they ask for anything to be done with it, that is "action".
+     Files from earlier in the thread count too: they appear in prior turns as "[attached: …]" (the teammate's uploads) or "[sent file: …]" (files the bot sent back). A follow-up that asks about what's INSIDE one of those files, or asks to change, fix, redo, re-run, or compare it ("column B is wrong", "what's the total on the sheet you sent?", "do it again with this one") is "action" — only the action path can open files.
    - "qa": anything else (asking a question, chatting, troubleshooting).
 
    Runnable tools (for intent classification only — NEVER put these in skill_ids):
@@ -276,13 +280,21 @@ def get_conversation_history(channel: str, thread_ts: str, current_ts: str, logg
         # Skip the progress lines every turn leaves behind — the placeholder, "Running X…",
         # "Still on it (42s)". They're the bot thinking out loud, not part of the
         # conversation. Snags and final answers are real statements and stay.
-        if status.is_progress_line(text):
+        # (A file upload has no text, which also reads as a progress line — keep those.)
+        if status.is_progress_line(text) and not msg.get("files"):
             continue
         is_bot = msg.get("user") == BOT_USER_ID or bool(msg.get("bot_id"))
         if is_bot:
             text = SOURCES_FOOTER_RE.sub("", text)
         else:
             text = strip_mention(text)
+        # Say which files went with which message. Without this the model (and the selector)
+        # saw a follow-up like "can you fix column B?" with no idea a spreadsheet was ever
+        # sent, and the bot's own uploads — messages with no text — vanished from history.
+        names = [f.get("name") or f.get("title") or "a file" for f in msg.get("files") or []]
+        if names:
+            tag = "sent file" if is_bot else "attached"
+            text = (text + "\n" if text else "") + f"[{tag}: {', '.join(names)}]"
         if not text:
             continue
         history.append({"role": "assistant" if is_bot else "user", "content": text})
@@ -650,25 +662,34 @@ def is_allowed(user_id: str | None) -> bool:
     return user_id in ALLOWED_USERS
 
 
-def recent_thread_files(channel: str, thread_ts: str, logger) -> list[dict]:
-    """Files the user attached earlier in this thread, so an action follow-up that doesn't
-    re-attach ("now highlight 'landscape' in it") can still operate on the original file.
-    Returns the `files` of the most recent NON-bot message that had attachments (newest
-    first), or []. The bot's own uploaded results are skipped so we never feed an output
-    back in as an input."""
+def thread_files(channel: str, thread_ts: str, exclude_ids, logger) -> tuple[list, int]:
+    """Every file posted EARLIER in this thread — the user's uploads and the bot's own
+    outputs — newest first, as slack_files.ThreadFiles, so a follow-up can work on any of
+    them: "fix column B in the sheet you sent", or a revised screenshot that replaces the
+    first. (Only the user's single most recent upload used to come along, and never the bot's
+    output, which is exactly what a follow-up on that output needs.)
+
+    `exclude_ids` are this message's own attachments, staged separately. Returns (files,
+    how many more were left out by THREAD_FILE_LIMIT)."""
     try:
-        resp = app.client.conversations_replies(channel=channel, ts=thread_ts, limit=100)
+        resp = app.client.conversations_replies(channel=channel, ts=thread_ts,
+                                                limit=HISTORY_FETCH_LIMIT)
         msgs = resp.get("messages", [])
     except Exception:
-        logger.exception("Failed to fetch thread history for file carry-over")
-        return []
+        logger.exception("Failed to fetch thread history for earlier files")
+        return [], 0
+    seen = set(exclude_ids or ())
+    found = []
     for msg in reversed(msgs):
-        if msg.get("user") == BOT_USER_ID or msg.get("bot_id"):
-            continue
-        files = msg.get("files") or []
-        if files:
-            return files
-    return []
+        is_bot = msg.get("user") == BOT_USER_ID or bool(msg.get("bot_id"))
+        origin = slack_files.BOT_OUTPUT if is_bot else slack_files.EARLIER_USER
+        for f in msg.get("files") or []:
+            fid = f.get("id")
+            if fid and fid in seen:
+                continue
+            seen.add(fid)
+            found.append(slack_files.ThreadFile(file=f, origin=origin, msg_ts=msg.get("ts", "")))
+    return found[:THREAD_FILE_LIMIT], max(0, len(found) - THREAD_FILE_LIMIT)
 
 
 def reply_with_thinking_indicator(question, channel, thread_ts, files, history, say, client,
@@ -736,25 +757,31 @@ def _run_turn(question, channel, thread_ts, files, history, say, client, logger,
         elif mcp is not None:
             logger.info("slack-mcp: attached for user %s (%s token)", user_id, mcp.token_source)
 
-        # On an action turn with no fresh attachment, reuse the file from earlier in the thread
-        # so follow-ups ("now highlight 'landscape' in it") don't make the user re-upload.
-        effective_files = files or []
-        if action and not effective_files:
-            effective_files = recent_thread_files(channel, thread_ts, logger)
-            if effective_files:
-                logger.info("Carrying %d file(s) forward from earlier in this thread", len(effective_files))
+        # On an action turn, load the files from earlier in the thread too — the user's
+        # earlier uploads and the bot's own outputs — so a follow-up ("now highlight
+        # 'landscape' in it", "fix the sheet you sent") or a revised upload has them all.
+        # This message's own attachments come first, so they keep handles file_1, file_2, …
+        effective_files = list(files or [])
+        omitted = 0
+        if action:
+            earlier, omitted = thread_files(channel, thread_ts,
+                                            [f.get("id") for f in effective_files], logger)
+            if earlier:
+                logger.info("Loading %d earlier file(s) from this thread (%d older left out)",
+                            len(earlier), omitted)
+            effective_files += earlier
 
         if action:
             if effective_files:
                 reporter.doing("downloading the file(s) from Slack")
             staging = slack_files.stage_attachments(effective_files, SLACK_BOT_TOKEN, TOOL_BACKEND, logger)
-            staging.carried_forward = bool(effective_files) and not files
+            staging.omitted_earlier = omitted
             # Staging skips anything it can't fetch. If that swallowed everything the user
             # attached to THIS message, say so now rather than letting the model flounder over
-            # an empty attachment list. Files merely carried over from earlier in the thread
-            # are a different matter — the user didn't ask for them this turn, so a failure
-            # there just goes into the prompt (staging.skipped) and the turn carries on.
-            if files and not staging.files:
+            # an empty attachment list. Files loaded from earlier in the thread are a different
+            # matter — the user didn't send them this turn, so a failure there just goes into
+            # the prompt (staging.skipped_earlier) and the turn carries on.
+            if files and not any(f.origin == slack_files.CURRENT for f in staging.files):
                 why = ("\n" + "\n".join(f"- {r}" for r in staging.skipped)) if staging.skipped else ""
                 reporter.fail(
                     f"Sorry — I couldn't open the file(s) you sent:{why}\n\nCould you try "
