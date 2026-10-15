@@ -10,7 +10,7 @@ Contract
 --------
 stdin (JSON):
   {
-    "input":       {"input_files": ["file_1", "file_2"], "ignore_first_column": true, "skip_pages": []},
+    "input":       {"input_files": ["file_1", "file_2"], "ignore_first_column": true, "split_names": true, "skip_pages": []},
     "input_path":  "/abs/path/to/staged.pdf",             # first file (single-file shorthand)
     "input_paths": ["/abs/path/a.jpg", "/abs/path/b.jpg"],# every file the call resolved
     "work_dir":    "/abs/path/to/run-<uuid>",             # where to write the .xlsx + result.json
@@ -82,6 +82,8 @@ def run(contract: dict) -> dict:
 
     skip_pages = tool_input.get("skip_pages") or []
     ignore_first_column = tool_input.get("ignore_first_column", True)
+    # Botanical and common names go in separate columns unless the user asked otherwise.
+    split_names = tool_input.get("split_names", True)
 
     sources = []
     for path in paths:
@@ -105,7 +107,8 @@ def run(contract: dict) -> dict:
     base = os.path.splitext(sources[0][0])[0] if len(sources) == 1 else "schedules"
     out_name = f"{base or 'schedules'}.xlsx"
     out_path = os.path.join(work_dir, out_name)
-    main2.save_excel(tables, out_path, ignore_first_column=ignore_first_column, labels=labels)
+    main2.save_excel(tables, out_path, ignore_first_column=ignore_first_column, labels=labels,
+                     split_names=split_names)
 
     # Entries are images or PDF pages depending on what came in; only say which when it's
     # all one kind.

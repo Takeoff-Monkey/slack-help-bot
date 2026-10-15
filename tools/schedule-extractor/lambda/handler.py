@@ -5,7 +5,7 @@ Lambda payloads are capped at 6 MB, so the bot always passes attachments by S3 k
 Extraction logic is the shared core in main2.py — unchanged.
 
 Event (from the bot's tool_runner LambdaBackend):
-  { "input": {"input_files": ["file_1", "file_2"], "ignore_first_column": true, "skip_pages": []},
+  { "input": {"input_files": ["file_1", "file_2"], "ignore_first_column": true, "split_names": true, "skip_pages": []},
     "input_path":  "runs/<id>/input/file_1-site.pdf",      # first file (single-file shorthand)
     "input_paths": ["runs/<id>/input/file_1-a.jpg", ...],  # every file the call resolved
     "work_dir":    "runs/<id>/work-XXXX/output",           # S3 prefix for outputs
@@ -45,6 +45,8 @@ def handler(event, context):
         out_prefix = (event.get("work_dir") or "output").rstrip("/")
         skip_pages = tool_input.get("skip_pages") or []
         ignore_first_column = tool_input.get("ignore_first_column", True)
+        # Botanical and common names go in separate columns unless the user asked otherwise.
+        split_names = tool_input.get("split_names", True)
 
         sources = [
             (_original_name(os.path.basename(key)), s3.get_object(Bucket=bucket, Key=key)["Body"].read())
@@ -65,7 +67,8 @@ def handler(event, context):
         base = os.path.splitext(sources[0][0])[0] if len(sources) == 1 else "schedules"
         out_name = f"{base or 'schedules'}.xlsx"
         local_path = f"/tmp/{out_name}"
-        main2.save_excel(tables, local_path, ignore_first_column=ignore_first_column, labels=labels)
+        main2.save_excel(tables, local_path, ignore_first_column=ignore_first_column, labels=labels,
+                         split_names=split_names)
 
         out_key = f"{out_prefix}/{out_name}"
         with open(local_path, "rb") as f:

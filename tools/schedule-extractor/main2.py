@@ -6,6 +6,7 @@ import io
 from io import BytesIO, StringIO
 import math
 import re
+import traceback
 import boto3
 from PIL import Image, ImageOps, UnidentifiedImageError
 from textractcaller.t_call import call_textract, Textract_Features
@@ -43,6 +44,9 @@ CLEANUP_MODEL = os.getenv("CLEANUP_MODEL", "claude-sonnet-5")
 VISION_MODEL = os.getenv("VISION_MODEL", "claude-haiku-4-5")
 # Often the first column will be a list of random symbols/codes, so we can ignore it
 IGNORE_FIRST_COLUMN = True
+# Break a combined plant-name column ("QUERCUS VIRGINIANA / LIVE OAK") out into separate
+# "Botanical Name" and "Common Name" columns. On unless the user explicitly asks otherwise.
+SPLIT_NAMES = True
 # Specific page indices to skip across all PDFs (e.g. cover pages)
 SKIP_PAGES = []
 # Keywords to identify schedules and legends. Must include "schedule" — a sheet's table is
@@ -398,14 +402,228 @@ def _sheet_name(page_num : int, index : int, labels : dict, stripped : bool, use
     return name
 
 
+# --- Botanical / common name split ---------------------------------------------------------
+# Plant schedules usually put both names in one column: "QUERCUS VIRGINIANA / LIVE OAK",
+# "Ilex vomitoria 'Nana' (Dwarf Yaupon Holly)", or — what Textract makes of a two-line cell —
+# "QUERCUS VIRGINIANA LIVE OAK" with nothing in between. Teammates want them in separate
+# columns, so save_excel splits them by default. Rule-based rather than an AI call: it runs in
+# the Lambda with no API key, and it never rewrites a cell it isn't sure about.
+
+# Header words that mark a column as holding plant names.
+_NAME_HEADERS = ("name", "plant", "species", "description", "material", "botanical", "common")
+# Headers that mean the schedule already has the two names in their own columns.
+_BOTANICAL_HEADERS = ("botanical", "latin", "scientific")
+_COMMON_HEADERS = ("common",)
+
+# Tokens that only appear in botanical names.
+_BOTANICAL_MARKERS = {"x", "×", "spp", "sp", "var", "subsp", "ssp", "cv", "f", "hybrid"}
+# Latin endings (genus and species epithets). Checked on words of 4+ letters.
+_LATIN_ENDINGS = (
+    "us", "um", "is", "ii", "ae", "ensis", "ata", "atum", "osa", "osum", "ica", "icum", "ana",
+    "anum", "iana", "ifolia", "ifolium", "oides", "ella", "ium", "ia", "ea", "eum", "ex", "ix",
+    "era", "ens", "ans", "alis", "ilis", "ina", "inum", "ora", "orum", "arum", "ior", "ius",
+    "ata", "ida", "ula", "ola", "ensis", "iae", "ae", "ys", "on", "ps", "ra", "na", "la",
+)
+# Words that only turn up in English common names (or are far likelier there).
+_COMMON_WORDS = {
+    "oak", "holly", "maple", "elm", "pine", "palm", "cedar", "cypress", "juniper", "grass",
+    "sedge", "fern", "ivy", "rose", "lily", "sage", "mint", "willow", "birch", "ash", "myrtle",
+    "crape", "crepe", "dwarf", "red", "white", "yellow", "blue", "purple", "pink", "green",
+    "gold", "golden", "silver", "live", "bur", "burr", "shumard", "lacebark", "chinese",
+    "japanese", "texas", "mexican", "american", "southern", "northern", "eastern", "western",
+    "weeping", "common", "giant", "little", "sweet", "bay", "laurel", "wax", "boxwood",
+    "yaupon", "possumhaw", "redbud", "pecan", "plum", "cherry", "peach", "apple", "pear",
+    "tree", "shrub", "bush", "vine", "flower", "daylily", "bluestem", "muhly", "bermuda",
+    "st", "st.", "augustine", "buffalo", "sod", "seed", "mix", "gulf", "coast", "primrose",
+    "honeysuckle", "jasmine", "star", "creeping", "fig", "olive", "desert", "spoon", "sotol",
+    "rosemary", "lavender", "thyme", "and", "of", "the", "with", "leaf", "leaved", "dwarf",
+    "big", "lord", "lady", "fountain", "feather", "switch", "lawn", "turf", "groundcover",
+    "black", "orange", "evergreen", "flowering", "smoke", "trumpet", "coral", "wild", "native",
+    "hedge", "ornamental", "variegated", "compact", "upright", "spreading", "grape", "hawthorn",
+    "dogwood", "persimmon", "walnut", "sycamore", "poplar", "cottonwood", "mulberry", "hackberry",
+    "mesquite", "huisache", "acacia", "palmetto", "bamboo", "aster", "daisy", "iris", "bulbine",
+    "ruellia", "foxtail", "asparagus", "cast", "iron", "plant", "zoysia", "carpet", "blackfoot",
+    "turk's", "cap", "firebush", "esperanza", "cenizo", "ceniza", "barbados", "pride",
+}
+_QUOTED = re.compile(r"""(['‘’"“”][^'‘’"“”]+['‘’"“”])""")
+_DELIMITERS = ("\n", " / ", "/", " – ", " — ", " - ", ";", ",")
+
+
+def _tokens(text):
+    """Words, keeping a quoted cultivar ('Little Gem') together as one token."""
+    out = []
+    for i, part in enumerate(_QUOTED.split(text)):
+        if i % 2:
+            out.append(part)
+        else:
+            out.extend(part.split())
+    return out
+
+
+def _latin_score(token, mixed_case):
+    """+ for botanical-looking, - for common-name-looking."""
+    if _QUOTED.fullmatch(token):
+        return 1.0                      # a cultivar belongs to the botanical name
+    w = token.strip(".,()[]:").lower()
+    if not w:
+        return 0.0
+    if w in _BOTANICAL_MARKERS:
+        return 1.0
+    if w in _COMMON_WORDS:
+        return -1.0
+    score = 0.6 if len(w) >= 4 and w.endswith(_LATIN_ENDINGS) else -0.4
+    # In mixed-case text the species epithet is the one all-lowercase word ("Quercus virginiana
+    # Live Oak"); common names come Title Cased.
+    if mixed_case and token.isalpha():
+        score += 0.6 if token.islower() else -0.2
+    return score
+
+
+def _side_score(tokens, mixed_case):
+    return sum(_latin_score(t, mixed_case) for t in tokens) / len(tokens)
+
+
+def _plausible_botanical(tokens):
+    """Genus + epithet, or genus + a marker/cultivar (Salvia 'Hot Lips', Carex spp.)."""
+    return len(tokens) >= 2 or (len(tokens) == 1 and tokens[0].strip(".").lower() in ("spp", "sp"))
+
+
+def split_plant_name(text, threshold=0.7):
+    """(botanical, common) for a cell that holds both names, or None when it doesn't — or when
+    it isn't clear which part is which. None leaves the cell as it was."""
+    if not isinstance(text, str):
+        return None
+    text = " ".join(text.replace("\r", "\n").split(" ")).strip()
+    if not text:
+        return None
+    mixed_case = text != text.upper() and text != text.lower()
+
+    def pick(a, b):
+        ta, tb = _tokens(a), _tokens(b)
+        if not ta or not tb:
+            return None
+        sa, sb = _side_score(ta, mixed_case), _side_score(tb, mixed_case)
+        if sa - sb >= threshold and _plausible_botanical(ta):
+            return a.strip(), b.strip()
+        if sb - sa >= threshold and _plausible_botanical(tb):
+            return b.strip(), a.strip()
+        return None
+
+    # 1. One name in parentheses: "Ilex vomitoria 'Nana' (Dwarf Yaupon Holly)".
+    m = re.fullmatch(r"(.+?)\s*\(([^()]+)\)\s*", text)
+    if m:
+        hit = pick(m.group(1), m.group(2))
+        if hit:
+            return hit
+    # 2. An explicit separator between them.
+    for d in _DELIMITERS:
+        parts = [p for p in text.split(d) if p.strip()]
+        if len(parts) == 2:
+            hit = pick(parts[0], parts[1])
+            if hit:
+                return hit
+    # 3. Nothing between them (Textract flattens a two-line cell): try every word boundary
+    #    and keep the clearest one.
+    tokens = _tokens(text.replace("\n", " "))
+    if len(tokens) < 3:
+        return None
+    # A quoted cultivar ends the botanical name: "ILEX X ATTENUATA 'SAVANNAH' SAVANNAH HOLLY".
+    quoted = [i for i, t in enumerate(tokens) if _QUOTED.fullmatch(t)]
+    if quoted and 1 <= quoted[-1] < len(tokens) - 1:
+        hit = pick(" ".join(tokens[:quoted[-1] + 1]), " ".join(tokens[quoted[-1] + 1:]))
+        if hit:
+            return hit
+    best, best_gap = None, threshold
+    for k in range(1, len(tokens)):
+        left, right = tokens[:k], tokens[k:]
+        gap = _side_score(left, mixed_case) - _side_score(right, mixed_case)
+        for bot, com, g in ((left, right, gap), (right, left, -gap)):
+            if g > best_gap and _plausible_botanical(bot):
+                best, best_gap = (" ".join(bot), " ".join(com)), g
+    return best
+
+
+def format_botanical(name):
+    """'QUERCUS VIRGINIANA 'HIGHRISE'' -> "Quercus virginiana 'Highrise'": genus capitalized,
+    epithets lowercase, cultivar Title Cased in its quotes."""
+    out = []
+    for i, tok in enumerate(_tokens(name)):
+        if _QUOTED.fullmatch(tok):
+            out.append(tok[0] + tok[1:-1].title() + tok[-1])
+        elif i == 0:
+            out.append(tok.capitalize())
+        else:
+            out.append(tok.lower())
+    return " ".join(out)
+
+
+def _is_subheader(row, col):
+    """A row with text only in the name column ("EVERGREEN SHRUBS") is a section label."""
+    return all(not str(v).strip() for j, v in enumerate(row) if j != col)
+
+
+def split_name_columns(df):
+    """Replace a combined plant-name column with "Botanical Name" + "Common Name". Returns the
+    frame unchanged when the schedule already has both columns, or when no column clearly
+    holds both names (most rows must split cleanly)."""
+    headers = [str(c).strip().lower() for c in df.columns]
+    is_bot = [any(k in h for k in _BOTANICAL_HEADERS) for h in headers]
+    is_com = [any(k in h for k in _COMMON_HEADERS) for h in headers]
+    if any(b and not c for b, c in zip(is_bot, is_com)) and \
+            any(c and not b for b, c in zip(is_bot, is_com)):
+        return df                                    # already in separate columns
+
+    for col, header in enumerate(headers):
+        combined_header = is_bot[col] and is_com[col]
+        # A name-ish header, or none at all (a screenshot cropped below the header row).
+        if header and not any(k in header for k in _NAME_HEADERS):
+            continue
+        values = df.iloc[:, col].tolist()
+        rows = df.values.tolist()
+        splits, candidates = [], 0
+        for r, v in enumerate(values):
+            if not isinstance(v, str) or not v.strip() or _is_subheader(rows[r], col):
+                splits.append(None)
+                continue
+            candidates += 1
+            splits.append(split_plant_name(v))
+        hits = sum(1 for s in splits if s)
+        if not candidates or hits / candidates < (0.3 if combined_header else 0.5):
+            continue
+
+        common_first = combined_header and header.find("common") < min(
+            header.find(k) for k in _BOTANICAL_HEADERS if k in header)
+        # Botanical first unless the schedule's own header put common first. Section labels
+        # and anything unclear stay whole, in whichever column comes first.
+        order = ("Common Name", "Botanical Name") if common_first else ("Botanical Name", "Common Name")
+        first, second = [], []
+        for v, s in zip(values, splits):
+            if s:
+                names = {"Botanical Name": format_botanical(s[0]), "Common Name": s[1].title()}
+                first.append(names[order[0]])
+                second.append(names[order[1]])
+            else:
+                # Title Cased here: the botanical column is skipped by save_excel's pass.
+                first.append(v.title() if isinstance(v, str) else v)
+                second.append("")
+        new = [(order[0], first), (order[1], second)]
+        df = df.drop(columns=df.columns[col])
+        for offset, (name, data) in enumerate(new):
+            df.insert(col + offset, name, data, allow_duplicates=True)
+        return df
+    return df
+
+
 # Process data into an excel file, separated into tabs by each schedule of each page.
 # ignore_first_column / ai_cleanup default to the module-level constants but can be
 # overridden per call (the AI-callable run.py entrypoint passes them through).
 def save_excel(data : dict, filename : str, stripped : bool = False,
                ignore_first_column : bool = None, ai_cleanup : bool = None,
-               labels : dict = None):
+               labels : dict = None, split_names : bool = None):
     if ignore_first_column is None:
         ignore_first_column = IGNORE_FIRST_COLUMN
+    if split_names is None:
+        split_names = SPLIT_NAMES
     if ai_cleanup is None:
         ai_cleanup = AI_CLEANUP
     used_sheets = set()
@@ -424,8 +642,19 @@ def save_excel(data : dict, filename : str, stripped : bool = False,
                     num_columns = max(len(row) for row in table_data)
                     df_columns = table_data[0] + [" " * k for k in range(1, (num_columns - len(table_data[0])) + 1)]
                     df = pd.DataFrame(table_data[1:], columns=df_columns)
-                    # Format text cells from all caps (besides first key/code column)
-                    df.iloc[:, 1 if ignore_first_column else 0:] = df.iloc[:, 1 if ignore_first_column else 0:].map(lambda x: x.title() if isinstance(x, str) else x)
+                    # Botanical / common split goes first: it reads the original casing
+                    # (a lowercase species epithet) and formats the botanical names itself.
+                    if split_names:
+                        try:
+                            df = split_name_columns(df)
+                        except Exception:
+                            if DEBUG:
+                                traceback.print_exc()
+                    # Format text cells from all caps (besides first key/code column, and the
+                    # botanical names, which aren't Title Case)
+                    for j in range(1 if ignore_first_column else 0, df.shape[1]):
+                        if str(df.columns[j]) != "Botanical Name":
+                            df.iloc[:, j] = df.iloc[:, j].map(lambda x: x.title() if isinstance(x, str) else x)
                 except Exception:
                     df = pd.DataFrame(table_data)
                 
@@ -437,7 +666,7 @@ def save_excel(data : dict, filename : str, stripped : bool = False,
                     instructions = [
                         """
                         I have the following planting/irrigation data in JSON. Perform these formatting steps on it:
-                        (1) If there is only 1 name column, and it contains both common and botanical/latin names together, separate these into 2 different columns called "Common Name" and "Botanical Name". If there is already a botanical/latin name column, ignore this step.
+                        (1) """ + ("""If there is only 1 name column, and it contains both common and botanical/latin names together, separate these into 2 different columns called "Common Name" and "Botanical Name". If there is already a botanical/latin name column, ignore this step.""" if split_names else """Keep common and botanical/latin names together exactly as they are; do NOT separate them into different columns.""") + """
                         (2) Merge subheaders split across multiple cells, and change them from all caps to title case; for example, the subheader cells "EVERGREEN", "SHRUBS" should be combined into a single cell called "Evergreen Shrubs". Do not change the keys/codes that may be in the same column, such as "QUE ALB".
                         (3) Clean up any typos in the English data (all other columns except the botanical names).
                         (4) Now check the botanical name column, and make sure that any typos in the latin name are fixed. If there is an extra specification in English (usually in quotes, like "Ilex Vomitoria 'Stokes'"), leave it in the cell.

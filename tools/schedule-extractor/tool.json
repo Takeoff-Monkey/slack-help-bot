@@ -22,6 +22,11 @@
         "default": true,
         "description": "Drop the first table column (often a column of plant symbols/codes rather than data). Set false to keep it."
       },
+      "split_names": {
+        "type": "boolean",
+        "default": true,
+        "description": "Break a combined plant-name column (e.g. \"QUERCUS VIRGINIANA / LIVE OAK\") into separate \"Botanical Name\" and \"Common Name\" columns. Leave this true (the default) — set false ONLY when the user explicitly asks to keep botanical and common names together in one column."
+      },
       "skip_pages": {
         "type": "array",
         "items": { "type": "integer" },
