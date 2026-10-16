@@ -4,8 +4,12 @@
 #
 # Usage:
 #   SCRATCH_BUCKET=prod-s3-tm-bot-scratch-YYYY-MM-DD ./deploy.sh
-#   (optional) ANTHROPIC_API_KEY=sk-ant-... if you enable AI_CLEANUP in main2.py
-#   (optional) CLEANUP_MODEL=claude-sonnet-5  to override the Claude cleanup model
+#   ANTHROPIC_API_KEY=sk-ant-...  needed for images to be read by Claude (without one they fall
+#     back to Textract). Only needed once: a deploy that leaves out a parameter keeps the value
+#     the stack already has, which also means a changed template Default doesn't apply to an
+#     existing stack until you pass the new value.
+#   (optional) VISION_MODEL=claude-haiku-5-5   to override the image-reading model
+#   (optional) CLEANUP_MODEL=claude-haiku-5-5  to override the AI cleanup model (AI_CLEANUP)
 #
 # First run uses --guided to create the stack config; later runs reuse it.
 set -euo pipefail
@@ -16,12 +20,16 @@ REGION="${AWS_DEFAULT_REGION:-us-east-1}"
 STACK="${STACK:-tm-tool-schedule-extractor}"
 ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
 CLEANUP_MODEL="${CLEANUP_MODEL:-}"
+VISION_MODEL="${VISION_MODEL:-}"
 
 sam build
 
 PARAMS="ScratchBucket=${SCRATCH_BUCKET}"
 if [ -n "${ANTHROPIC_API_KEY}" ]; then
   PARAMS="${PARAMS} AnthropicApiKey=${ANTHROPIC_API_KEY}"
+fi
+if [ -n "${VISION_MODEL}" ]; then
+  PARAMS="${PARAMS} VisionModel=${VISION_MODEL}"
 fi
 if [ -n "${CLEANUP_MODEL}" ]; then
   PARAMS="${PARAMS} CleanupModel=${CLEANUP_MODEL}"

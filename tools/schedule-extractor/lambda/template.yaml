@@ -2,8 +2,8 @@ AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: >
   schedule-extractor tool as a synchronous (request/response) Lambda for the Takeoff Monkey
-  Slack bot. Reads a PDF from the scratch S3 bucket, extracts plant legends / material
-  schedules with PyMuPDF + Textract, writes an .xlsx back to S3, returns a JSON result.
+  Slack bot. Reads a PDF or images from the scratch S3 bucket, extracts plant legends / material
+  schedules (PDFs: PyMuPDF + Textract; images: Claude vision, Textract as fallback), writes an .xlsx back to S3, returns a JSON result.
 
 Parameters:
   ScratchBucket:
@@ -13,11 +13,15 @@ Parameters:
     Type: String
     Default: ""
     NoEcho: true
-    Description: Only needed if AI_CLEANUP is enabled in main2.py. Leave blank otherwise.
+    Description: Claude reads schedule images with this (main2.py extract_image_table_vision). Blank falls back to Textract for images, which drops small characters.
+  VisionModel:
+    Type: String
+    Default: "claude-haiku-5-5"
+    Description: Claude model that reads schedule images (main2.py VISION_MODEL). Smallest model that does the job; bump here without a code change.
   CleanupModel:
     Type: String
-    Default: "claude-sonnet-5"
-    Description: Claude model for the AI cleanup pass (main2.py CLEANUP_MODEL). Bump to a newer model here without a code change.
+    Default: "claude-haiku-5-5"
+    Description: Claude model for the AI cleanup pass (main2.py CLEANUP_MODEL, only used when AI_CLEANUP is on).
 
 Globals:
   Function:
@@ -35,6 +39,7 @@ Resources:
         Variables:
           SCRATCH_S3_BUCKET: !Ref ScratchBucket
           ANTHROPIC_API_KEY: !Ref AnthropicApiKey
+          VISION_MODEL: !Ref VisionModel
           CLEANUP_MODEL: !Ref CleanupModel
           # NOTE: do NOT set AWS_DEFAULT_REGION here — it's a reserved Lambda runtime var
           # (the runtime already provides AWS_REGION / AWS_DEFAULT_REGION = the function's

@@ -32,8 +32,18 @@ common/botanical plant names — off by default.
 Images do **not** go through keyword/header detection. Most are screenshots: cropped to the
 table, often without the "PLANT SCHEDULE" title or with the header row cut off, and OCR splits
 a header row into separate lines, so anchoring on "QTY" used to crop the frame down to that
-one column. Instead the **whole image** goes straight to Textract table recovery
-(`extract_frame_table`):
+one column. Instead the **whole image** is read as-is:
+
+- **Claude reads it first** (`extract_image_table_vision`, `VISION_MODEL` = Haiku 5.5 at
+  `VISION_EFFORT` = medium). Textract's OCR loses small characters in a typical screenshot:
+  the "1" in "1 GAL", the dash in `12" - 18"`, the "L" in "LINDHEIMER". On a 66-row plant
+  schedule screenshot Textract got 39 rows exactly right; Haiku 5.5 got all 66, in 4 of 4
+  runs, for about $0.003 and 16 s an image. (Low effort read every character too, but put a
+  value on the wrong row 2 times in 3. Sonnet was never needed.)
+- **Textract is the fallback** (`extract_frame_table`) when there's no `ANTHROPIC_API_KEY`,
+  or the API call errors, refuses, or gets cut off. The reason goes to stdout (CloudWatch).
+
+What follows holds for both readers:
 
 - **One image → one sheet.** Textract often splits one schedule into several tables (each
   seed-mix block comes back separately); they are merged back into one sheet, with a blank row
@@ -138,7 +148,9 @@ echo '{"input":{},"input_paths":["/path/a.jpg","/path/b.jpg"],"work_dir":"."}' \
 
 `.env` (gitignored — never commit it) provides:
 - `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION` (for Textract/S3)
-- `ANTHROPIC_API_KEY` (only used when `AI_CLEANUP=True`)
+- `ANTHROPIC_API_KEY` — Claude reads images with it (and `AI_CLEANUP` uses it); without it
+  images fall back to Textract
+- `VISION_MODEL`, `CLEANUP_MODEL` (optional) — both default to `claude-haiku-5-5`
 
 > ⚠️ Rotate any keys that have been shared or committed. In the Lambda, Textract/S3 should
 > use the **execution IAM role** (no static keys); only `ANTHROPIC_API_KEY` needs to be set as

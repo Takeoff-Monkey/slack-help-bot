@@ -3,6 +3,7 @@ import fitz
 import os
 from datetime import datetime
 import io
+import json
 from io import BytesIO, StringIO
 import math
 import re
@@ -37,11 +38,17 @@ OUT_PREFIX = "output"
 # Perform extra formatting, like fixing any typos in the original PDF
 AI_CLEANUP = False
 # Claude model IDs — env-overridable so they can be bumped without a code change
-# (set these in the tool's .env locally, or on the Lambda via template.yaml).
-# CLEANUP_MODEL: the active AI cleanup pass in save_excel (only used when AI_CLEANUP is on).
-# VISION_MODEL: the (currently unused) vision table-extraction fallback.
-CLEANUP_MODEL = os.getenv("CLEANUP_MODEL", "claude-sonnet-5")
-VISION_MODEL = os.getenv("VISION_MODEL", "claude-haiku-4-5")
+# (set these in the tool's .env locally, or on the Lambda via template.yaml). Both are the
+# smallest model that does the job; reach for a bigger one only with a failing case in hand.
+# VISION_MODEL reads schedule images (extract_image_table_vision). On a 66-row screenshot that
+# Textract got 39 rows right on (it drops the "1" in "1 GAL" and every dash in "12" - 18""),
+# Haiku 5.5 read every character. At low effort it sometimes put a value on the wrong row (2 of
+# 3 runs copied the first plant's size onto its group label); at medium it was exact 4 of 4
+# times, for ~$0.003 and ~16 s an image. Sonnet was never needed.
+# CLEANUP_MODEL: the AI cleanup pass in save_excel (only used when AI_CLEANUP is on).
+VISION_MODEL = os.getenv("VISION_MODEL", "claude-haiku-5-5")
+VISION_EFFORT = os.getenv("VISION_EFFORT", "medium")
+CLEANUP_MODEL = os.getenv("CLEANUP_MODEL", "claude-haiku-5-5")
 # Often the first column will be a list of random symbols/codes, so we can ignore it
 IGNORE_FIRST_COLUMN = True
 # Break a combined plant-name column ("QUERCUS VIRGINIANA / LIVE OAK") out into separate
@@ -346,32 +353,101 @@ def extract_frame_table(image_bytes):
         print(textract_str)
     return _rows_from_table_string(textract_str) if textract_str else None
 
-# Claude Vision (unused; less accurate & slower. Do not use!)
-def extract_table_data_vision(image_bytes):
-    img_b64_str = base64.b64encode(image_bytes).decode('utf-8')
-    img_type = 'image/png'
+# --- Claude vision: the first reader for images -------------------------------------------
+# Textract's OCR loses small characters in a typical screenshot — the "1" in "1 GAL", the dash
+# in "12" - 18"", the "L" in "LINDHEIMER" — and those are the quantities a takeoff runs on. A
+# current vision model reads the same image exactly. (An older note here said vision was "less
+# accurate & slower"; that was Haiku 4.5 on PDF crops.) Textract stays as the fallback.
 
-    response = client.messages.create(
-        model=VISION_MODEL,
-        max_tokens=4096,
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "Extract the table from the following image, and return in a JSON-only format that can easily be converted to a Pandas DataFrame (without including any extra information or codeblock formatting)."},
-                    {
-                        "type": "image",
-                        "source": {"type": "base64", "media_type": img_type, "data": img_b64_str},
-                    }
-                ]
-            }
-        ]
-    )
+VISION_PROMPT = """Transcribe the schedule table(s) in this image (a plant legend or material schedule from a construction/landscape drawing) into rows and columns.
 
-    content = next((b.text for b in response.content if b.type == "text"), "")
+- Copy every character exactly as printed: keep spelling mistakes, capitalization, quantities, units, quote marks and dashes as they appear. Never correct, expand or reformat anything.
+- Every printed line is its own row, top to bottom. A group/section label (e.g. "CANOPY TREE") is a row of its own, together with any area or total printed on that same line; the items under it start on the next row. Never merge a label into the row below it.
+- Put each value in the column it sits in on the drawing. Keep a combined name like "QUERCUS VIRGINIANA / LIVE OAK" in one cell.
+- Leave out drawn symbols/hatch swatches, the table's title, and columns that would be empty.
+- `columns` is the printed header row, or an empty list if there is none."""
+
+VISION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "tables": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "columns": {"type": "array", "items": {"type": "string"}},
+                    "rows": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}},
+                },
+                "required": ["columns", "rows"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["tables"],
+    "additionalProperties": False,
+}
+
+# The API's per-image limit is 5 MB, and no current model reads past ~2576 px on the long edge
+# (it would downsize anyway), so a 12 MP phone photo is shrunk here rather than rejected there.
+VISION_MAX_SIDE = 2576
+VISION_MAX_BYTES = 3_750_000
+
+
+def _vision_image(image):
+    longest = max(image.width, image.height)
+    if longest > VISION_MAX_SIDE:
+        scale = VISION_MAX_SIDE / longest
+        image = image.resize((max(1, int(image.width * scale)), max(1, int(image.height * scale))),
+                             Image.LANCZOS)
+    data = image_to_bytes(image)
+    if len(data) <= VISION_MAX_BYTES:
+        return data, "image/png"
+    buf = io.BytesIO()
+    image.convert("RGB").save(buf, format="JPEG", quality=92)
+    return buf.getvalue(), "image/jpeg"
+
+
+# Rows read straight off the image by Claude, or None when it couldn't (no API key, an API
+# error, a refusal, a cut-off answer) — the caller falls back to Textract. Several tables are
+# folded into one with a blank row between, the same shape extract_frame_table gives. A printed
+# header row comes first, so save_excel's header check can see it.
+def extract_image_table_vision(image):
+    if client is None:
+        return None
+    data, media_type = _vision_image(image)
+    try:
+        response = client.messages.create(
+            model=VISION_MODEL,
+            max_tokens=16000,
+            output_config={"effort": VISION_EFFORT,
+                           "format": {"type": "json_schema", "schema": VISION_SCHEMA}},
+            messages=[{"role": "user", "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": media_type,
+                                             "data": base64.b64encode(data).decode()}},
+                {"type": "text", "text": VISION_PROMPT},
+            ]}],
+        )
+        if response.stop_reason != "end_turn":
+            print(f"vision: stopped with {response.stop_reason}; falling back to Textract")
+            return None
+        tables = json.loads(next(b.text for b in response.content if b.type == "text"))["tables"]
+    except Exception as err:
+        print(f"vision: {type(err).__name__}: {err}; falling back to Textract")
+        return None
+
+    out = []
+    for table in tables:
+        rows = [r for r in table["rows"] if any(c.strip() for c in r)]
+        if not rows:
+            continue
+        if out:
+            out.append([""])
+        if any(c.strip() for c in table["columns"]):
+            out.append(table["columns"])
+        out.extend(rows)
     if DEBUG:
-        print(content)
-    return content
+        print(out)
+    return out or None
 
 # Excel is strict about worksheet names — 31 characters, none of []:*?/\, no duplicates —
 # and pandas' writers raise rather than truncate. Image inputs put a user-supplied filename
@@ -699,12 +775,13 @@ def save_excel(data : dict, filename : str, stripped : bool = False,
             for i, table_data in enumerate(page_data):
                 # Attempt to do a better job of formatting
                 try:
-                    # Remove any empty leading rows
-                    w = 0
-                    while table_data[0][w] == "":
+                    # Remove leading rows with nothing in them: blank, or the "|---|" separator
+                    # the Textract path's table-string parse leaves at the top. (This used to
+                    # step one cell further right per dropped row, which could drop real rows
+                    # from the clean tables the vision path returns.)
+                    while table_data and all(re.fullmatch(r"-*", str(c).strip()) for c in table_data[0]):
                         table_data = table_data[1:]
-                        w += 1
-                    
+
                     # Format header row. With no header row at all (a screenshot of just the
                     # table body), every row is data and the columns go unnamed — the split
                     # below names the plant-name pair itself.
@@ -760,7 +837,7 @@ def save_excel(data : dict, filename : str, stripped : bool = False,
                     response = client.messages.create(
                         model=CLEANUP_MODEL,
                         max_tokens=16000,
-                        thinking={"type": "disabled"},
+                        output_config={"effort": "low"},
                         system=instructions[0],
                         messages=[
                             {"role": "user", "content": f"{df.to_json(orient='split')}"}
@@ -885,10 +962,11 @@ def process_pdf(pdf_bytes : bytes, skip_pages : list = None) -> dict:
 # Images skip the keyword/header detection PDFs use. Most are screenshots: cropped to the
 # table, often without its "PLANT SCHEDULE" title, or with the header row scrolled off, and
 # OCR splits a header row into separate LINE blocks, so anchoring on "QTY" would crop the
-# frame down to that one column. Textract's table recovery finds the table in the frame by
-# itself, so the whole image goes to it and becomes one sheet.
+# frame down to that one column. The whole image is read as-is and becomes one sheet: by
+# Claude first (exact characters), by Textract's table recovery if that isn't available.
 def process_image(image_bytes : bytes) -> list:
-    table = extract_frame_table(image_to_bytes(load_image(image_bytes)))
+    image = load_image(image_bytes)
+    table = extract_image_table_vision(image) or extract_frame_table(image_to_bytes(image))
     return [table] if table else []
 
 

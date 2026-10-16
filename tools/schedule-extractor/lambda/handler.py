@@ -18,7 +18,7 @@ table) in any mix; everything found lands in ONE workbook.
 Returns the same result dict run.py writes, with artifact refs as S3 keys.
 
 Credentials: Textract + S3 come from the Lambda execution role (no static keys). Only
-ANTHROPIC_API_KEY is needed as an env var, and only if AI_CLEANUP is enabled.
+ANTHROPIC_API_KEY is needed as an env var: Claude reads images with it (Textract is the fallback).
 """
 
 import os
