@@ -38,10 +38,21 @@ ACTION_MODEL = os.environ.get("ACTION_MODEL", "claude-sonnet-5")
 MAX_TOOL_ITERATIONS = int(os.environ.get("MAX_TOOL_ITERATIONS", "14"))
 # When this few steps remain, tell the model to stop exploring and produce the deliverable.
 ENDGAME_STEPS = int(os.environ.get("AGENT_ENDGAME_STEPS", "3"))
-MAX_TOKENS = 2048
-# Per-request cap on a model call. The SDK's default read timeout is 600s, so a wedged
-# request used to mean ten minutes of an unchanging "Thinking…" placeholder (times the
-# SDK's own retries). Fail fast enough that we can tell the user something instead.
+# Output cap for one step. This was 2048, and a tool call is output too: when the model builds a
+# workbook from a screenshot it types every row into the run_code script, and a 40-row plant
+# schedule blew straight through 2048. The half-written call can't run, so the turn ended with
+# "I ran out of room" — and "continue" just re-ran the same job into the same wall, every time.
+# Steps stream (see _call_model), so a large cap costs nothing unless it's used.
+MAX_TOKENS = int(os.environ.get("ACTION_MAX_TOKENS", "32000"))
+# The step-cap wrap-up asks for two sentences; it doesn't need the full budget (and, being a
+# plain non-streaming call, the SDK refuses one whose max_tokens implies a >10-minute response).
+SUMMARY_MAX_TOKENS = 1024
+# How many times a step cut off mid-tool-call is retried (with a "do it in smaller pieces" note)
+# before the turn gives up and says so.
+TRUNCATION_RETRIES = 2
+# A wedged request used to mean ten minutes of an unchanging "Thinking…" placeholder (the SDK's
+# default read timeout, times its own retries). Steps stream, so this is the longest we'll go
+# without receiving a single byte — not a cap on how long a long answer may take to write.
 MODEL_TIMEOUT = float(os.environ.get("ACTION_MODEL_TIMEOUT_SECONDS", "120"))
 
 # Tools run in a worker thread so the loop can keep polling the cancel signal and abandon a
@@ -206,6 +217,30 @@ def _short(s, n: int = 300) -> str:
     return s if len(s) <= n else s[:n] + "…"
 
 
+def _call_model(client, mcp, kwargs: dict, cancel_event):
+    """One model step, streamed. Returns the final Message, or None if the user cancelled while
+    it was being written.
+
+    Streaming is what lets MAX_TOKENS be large: a non-streaming call is one long silent wait
+    (MODEL_TIMEOUT would cut off a long tool call mid-write, and the SDK refuses large caps
+    outright), while a stream keeps bytes flowing the whole time. It also means a "stop" lands
+    mid-generation instead of after it."""
+    if mcp is None:
+        stream_ctx = client.messages.stream(**kwargs)
+    else:
+        # The connector lives on the beta endpoint, and `mcp_servers` without the matching
+        # `mcp_toolset` already in the tools is a validation error, not a silent no-op — the two
+        # halves are added together or not at all.
+        stream_ctx = client.beta.messages.stream(
+            betas=mcp.betas, mcp_servers=mcp.mcp_servers, **kwargs
+        )
+    with stream_ctx as stream:
+        for _event in stream:
+            if cancel_event.is_set():
+                return None
+        return stream.get_final_message()
+
+
 def _append_user_text(messages: list, text: str) -> None:
     """Put an instruction into the conversation as the final user content. Folds into the last
     user turn when there is one (tool_results are a list of blocks; a nudge is a string), so we
@@ -319,6 +354,7 @@ def run_agent(client, question, history, staging, tool_specs, reporter, on_artif
     used_a_tool = False                 # did anything actually happen this turn?
     nudged = False                      # we only ever poke the model once (see below)
     endgame_warned = False              # told it once that the steps are running out
+    truncations = 0                     # steps cut off mid-tool-call (see TRUNCATION_RETRIES)
     trace: list = [f"USER: {question!r} | files={[f.handle for f in staging.files]}"]
     if routing:
         trace.append(f"ROUTING: {routing}")
@@ -366,15 +402,7 @@ def run_agent(client, question, history, staging, tool_specs, reporter, on_artif
                 messages=messages,
                 timeout=MODEL_TIMEOUT,
             )
-            if mcp is None:
-                msg = client.messages.create(**kwargs)
-            else:
-                # The connector lives on the beta endpoint, and `mcp_servers` without the
-                # matching `mcp_toolset` already in tool_defs is a validation error, not a
-                # silent no-op — the two halves are added together or not at all.
-                msg = client.beta.messages.create(
-                    betas=mcp.betas, mcp_servers=mcp.mcp_servers, **kwargs
-                )
+            msg = _call_model(client, mcp, kwargs, cancel_event)
         except Exception as err:
             # A Slack token the MCP server rejects fails the whole call, not just the search
             # — so the user's actual job would die because a lookup they never asked for
@@ -396,7 +424,7 @@ def run_agent(client, question, history, staging, tool_specs, reporter, on_artif
             trace.append(f"MODEL ERROR[{step + 1}]: {type(err).__name__}: {err}")
             return AgentResult(text=_model_failure_text(err, artifacts), artifacts=artifacts,
                                work_dirs=work_dirs, trace=trace, failed=True)
-        if cancel_event.is_set():
+        if msg is None or cancel_event.is_set():
             return cancelled_result()
 
         # The assistant turn (text + tool_use blocks) must be appended verbatim before the
@@ -422,6 +450,33 @@ def run_agent(client, question, history, staging, tool_specs, reporter, on_artif
                     [b.name for b in tool_calls])
         if say:
             trace.append(f"ASSISTANT[{step + 1}]: {say}")
+
+        # Cut off while still writing a tool call. The call is incomplete, so it can't run, and
+        # it can't stay in history either (a tool_use with no tool_result is rejected). Drop the
+        # turn and have the model redo it in smaller pieces — never hand the user a "say
+        # continue", which would only restart the whole job and hit the same wall.
+        if msg.stop_reason == "max_tokens" and tool_calls:
+            if msg.content:
+                messages.pop()
+            truncations += 1
+            trace.append(f"TRUNCATED[{step + 1}]: tool call cut off at max_tokens "
+                         f"(attempt {truncations})")
+            logger.warning("agent: step %d cut off mid-tool-call at max_tokens (attempt %d)",
+                           step + 1, truncations)
+            if truncations <= TRUNCATION_RETRIES:
+                _append_user_text(messages, (
+                    "Your last reply hit the output length limit while you were still writing a "
+                    "tool call, so it was cut off and nothing ran. Do that step again in smaller "
+                    "pieces: split it across several shorter run_code calls (for example, save "
+                    "the extracted rows to a JSON or CSV file in one call, then build the "
+                    "workbook from that file in the next) instead of one very long script."
+                ))
+                continue
+            text = (f"{status.SNAG} Sorry — what I was building was too big to write out in one "
+                    f"go, and I couldn't get it done in smaller pieces either. {status.TRY_AGAIN}")
+            trace.append(f"DONE: {text}")
+            return AgentResult(text=text, artifacts=artifacts, work_dirs=work_dirs, trace=trace,
+                               failed=True)
 
         # The server-side tools hit their own per-turn ceiling mid-answer. The assistant turn
         # is already appended verbatim above, which is exactly what a continuation needs — so
@@ -607,7 +662,7 @@ def run_agent(client, question, history, staging, tool_specs, reporter, on_artif
         # "none" is what actually keeps the model from calling anything.
         final = client.messages.create(
             model=ACTION_MODEL,
-            max_tokens=MAX_TOKENS,
+            max_tokens=SUMMARY_MAX_TOKENS,
             thinking={"type": "disabled"},
             system=ACTION_SYSTEM,
             messages=messages,
