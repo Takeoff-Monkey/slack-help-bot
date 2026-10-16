@@ -108,7 +108,7 @@ Selected by `TOOL_BACKEND`:
 | `TOOL_BACKEND` | `local` | `local` or `lambda` |
 | `SCRATCH_S3_BUCKET` | — | scratch bucket for staging files (lambda only) |
 | `MAX_FILE_BYTES` | `26214400` | per-attachment download cap (25 MB) |
-| `ACTION_MODEL` | `claude-sonnet-5` | model that drives the tool-use loop |
+| `ACTION_MODEL` | `claude-haiku-5-5` | model that drives the tool-use loop (thinking on) |
 | `MAX_TOOL_ITERATIONS` | `6` | tool-use loop cap |
 | `SANDBOX_TIMEOUT_SECONDS` | `120` | hard cap on a single `run_code` run |
 | `SANDBOX_LAMBDA_NAME` | `tm-sandbox-runcode` | default sandbox Lambda name (lambda only) |

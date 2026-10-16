@@ -96,9 +96,9 @@ Bot expects these env vars on Heroku:
 | `ANTHROPIC_API_KEY` | `sk-ant-…` |
 | `ALLOWED_USERS` | Comma-separated Slack user IDs (e.g. `U01XXX,U02YYY`). If unset, bot responds to everyone (production). If set, only those users get answers — use for testing. |
 | `SKILL_DOCS_BASE_URL` | e.g. `https://takeoff-monkey.github.io/slack-help-bot/skills` — if set, Sources footer links to the HTML docs. If unset, sources shown as plain text. |
-| `SELECTOR_MODEL` | Claude model for the cheap routing/skill-picker call. Default `claude-haiku-4-5`. |
-| `ANSWER_MODEL` | Claude model for Q&A answers. Default `claude-sonnet-5`. |
-| `ACTION_MODEL` | Claude model for the tool-use loop. Default `claude-sonnet-5`. |
+| `SELECTOR_MODEL` | Claude model for the cheap routing/skill-picker call. Default `claude-haiku-5-5`. |
+| `ANSWER_MODEL` | Claude model for Q&A answers. Default `claude-haiku-5-5` (thinking on). |
+| `ACTION_MODEL` | Claude model for the tool-use loop. Default `claude-haiku-5-5` (thinking on). |
 | `SLACK_MCP_USER_TOKEN` | Optional `xoxp-…` user token that switches on Slack search. Unset ⇒ the bot answers from the skill docs only. See [DEPLOY.md Part 0b](DEPLOY.md) for the scopes and the per-user alternative. |
 
 ## Searching Slack (Slack MCP)

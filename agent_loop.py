@@ -28,7 +28,15 @@ import status
 import tool_registry
 import tool_runner
 
-ACTION_MODEL = os.environ.get("ACTION_MODEL", "claude-sonnet-5")
+# Haiku 5.5 with thinking on (TODO #8: the smallest model that does the job). Replayed on 26
+# real file jobs from the bot's DMs (Arazoza formatting, dedupes, PDF and screenshot
+# extractions, follow-ups on its own output) and judged blind against Sonnet 5: Haiku won 9,
+# Sonnet 6, 11 ties, and each delivered a correct file 18 times, for $0.08 against $1.69.
+# Thinking is what makes it work: with thinking off Haiku lost 11-2. It uppercased a sheet it
+# was asked to title-case, deleted rows it was asked to dedupe, and asked questions instead of
+# doing the job. Thinking blocks go back into the conversation verbatim with msg.content.
+ACTION_MODEL = os.environ.get("ACTION_MODEL", "claude-haiku-5-5")
+ACTION_THINKING = {"type": "adaptive"}
 # A "step" is one model call, not one tool call — so this is the total number of times the model
 # gets to think this turn. 6 was sized for the happy path (call the one right tool, report back)
 # and was far too tight for real `run_code` work: inspect a sheet, work out its layout, transform
@@ -396,7 +404,7 @@ def run_agent(client, question, history, staging, tool_specs, reporter, on_artif
             kwargs = dict(
                 model=ACTION_MODEL,
                 max_tokens=MAX_TOKENS,
-                thinking={"type": "disabled"},
+                thinking=ACTION_THINKING,
                 system=system,
                 tools=tool_defs,
                 messages=messages,
@@ -663,7 +671,7 @@ def run_agent(client, question, history, staging, tool_specs, reporter, on_artif
         final = client.messages.create(
             model=ACTION_MODEL,
             max_tokens=SUMMARY_MAX_TOKENS,
-            thinking={"type": "disabled"},
+            thinking=ACTION_THINKING,
             system=ACTION_SYSTEM,
             messages=messages,
             tools=tool_defs,

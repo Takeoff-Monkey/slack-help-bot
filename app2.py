@@ -92,12 +92,21 @@ KNOWLEDGE_CHANNELS = [
 # their 'updated' timestamp, so this is cheap.
 CANVAS_SYNC_INTERVAL = int(os.environ.get("CANVAS_SYNC_INTERVAL_SECONDS", "600"))
 
-# Two-tier model setup: Haiku for the cheap selector (structured JSON pick),
-# Sonnet for the answer (reading + summarizing skill docs in Slack-friendly prose).
-# Opus would be overkill for both — this is grounded retrieval, not deep reasoning.
+# Both Q&A calls run on Haiku (TODO #8: the smallest model that does the job): the selector's
+# structured JSON pick, and the answer (reading + summarizing skill docs in Slack-friendly
+# prose). Replayed against Sonnet 5 on every real Q&A turn in the bot's DMs, Haiku 5.5 with
+# thinking on won more doc questions (7-5), flagged fewer unsupported claims (7 vs 9 of 27),
+# and answered faster (1.2 s vs 2.1 s). With thinking OFF it contradicted the thread it was
+# reading ("no file was attached" right after delivering one), so the answer keeps thinking on.
 # Model IDs are env-overridable so they can be bumped without a code change.
-SELECTOR_MODEL = os.environ.get("SELECTOR_MODEL", "claude-haiku-4-5")
-ANSWER_MODEL = os.environ.get("ANSWER_MODEL", "claude-sonnet-5")
+SELECTOR_MODEL = os.environ.get("SELECTOR_MODEL", "claude-haiku-5-5")
+# Haiku 5.5 thinks by default, and thinking counts against max_tokens. The selector keeps a
+# little of it (low effort): replayed on 58 real turns, thinking off filled all five skill
+# slots with single Heroku apps for "how many heroku apps are running?" instead of the overview,
+# and skipped the Slack search on a "why isn't it updating Monday?" question. The cancel check
+# is a plain yes/no and runs with thinking off.
+SELECTOR_EFFORT = "low"
+ANSWER_MODEL = os.environ.get("ANSWER_MODEL", "claude-haiku-5-5")
 MAX_SKILLS_PER_QUESTION = 5
 MAX_SLACK_MESSAGE_CHARS = 3800
 
@@ -215,7 +224,7 @@ Available skills:
 
 ANSWER_SYSTEM = """You are an AI assistant for Takeoff Monkey, a takeoff/estimating services company. You answer teammates' questions about the company's internal tech stack — Heroku bots, Zapier automations, AWS Lambdas, Google Cloud apps, Monday board automations, Chrome extensions, etc.
 
-Ground every answer in the skill documentation provided in the user message. Be concise and direct: lead with the answer itself — typically 1–5 sentences, or a short bulleted list for steps. No openers ("Great question!", "Sure!", "Happy to help"), no restating the question, no closing offers ("let me know if…"). When you reference a specific system, name it. If the provided skills don't cover the question, say so directly — don't guess or pad.
+Ground every answer in the skill documentation provided in the user message. Be concise and direct: lead with the answer itself — typically 1–5 sentences, or a short bulleted list for steps. No openers ("Great question!", "Sure!", "Happy to help"), no restating the question, no closing offers ("let me know if…"). When you reference a specific system, name it. If the provided skills don't cover the question, say so directly — don't guess or pad. A greeting, a thank-you or a "stop" gets a one-line reply: don't list what you can help with or repeat details from earlier in the thread.
 
 Formatting — your output is rendered in Slack, which uses mrkdwn (not standard Markdown). Use only these conventions:
 - Inline code or identifiers: backticks, like `job-number` or `#12345!`
@@ -373,10 +382,11 @@ def _run_selector(question: str, history: list[dict]) -> tuple[str, list[str], b
     messages = normalize_message_history(history + [{"role": "user", "content": question}])
     response = anthropic_client.messages.create(
         model=SELECTOR_MODEL,
-        max_tokens=512,
+        max_tokens=4096,                    # room for its thinking as well as the JSON
         system=selector_system_blocks(),
         messages=messages,
-        output_config={"format": {"type": "json_schema", "schema": _selector_schema()}},
+        output_config={"effort": SELECTOR_EFFORT,
+                       "format": {"type": "json_schema", "schema": _selector_schema()}},
     )
     text = next(b.text for b in response.content if b.type == "text")
     payload = json.loads(text)
@@ -396,8 +406,8 @@ def select_skills(question: str, history: list[dict]) -> list[str]:
 # searching in circles and should say so rather than keep spending the user's time.
 MAX_MCP_CONTINUATIONS = int(os.environ.get("SLACK_MCP_MAX_CONTINUATIONS", "2"))
 # The Slack-search answer has to fit its thinking and its tool round-trips into one budget,
-# so it gets more room than the plain retrieval answer's 2048.
-MCP_ANSWER_MAX_TOKENS = int(os.environ.get("SLACK_MCP_ANSWER_MAX_TOKENS", "4096"))
+# so it gets at least the plain retrieval answer's room.
+MCP_ANSWER_MAX_TOKENS = int(os.environ.get("SLACK_MCP_ANSWER_MAX_TOKENS", "8000"))
 
 
 def _answer_with_slack(system: str, messages: list[dict], mcp, logger) -> tuple[object | None, list[str]]:
@@ -406,7 +416,7 @@ def _answer_with_slack(system: str, messages: list[dict], mcp, logger) -> tuple[
     `pause_turn` continuation, and the assistant turn must be appended verbatim (thinking
     blocks included) for the model to pick up where it left off.
 
-    Thinking is left on here, unlike the plain retrieval call: this one decides whether and
+    Thinking is on here, as in the plain retrieval call: this one also decides whether and
     what to search, and a search-then-synthesise turn is exactly the shape that goes wrong
     with thinking disabled (a tool call written out as prose instead of actually made).
 
@@ -493,8 +503,8 @@ def answer_question(question: str, skill_ids: list[str], history: list[dict],
     if final is None:
         with anthropic_client.messages.stream(
             model=ANSWER_MODEL,
-            max_tokens=2048,
-            thinking={"type": "disabled"},
+            max_tokens=8000,                # thinking counts against this, not just the answer
+            thinking={"type": "adaptive"},
             output_config={"effort": "medium"},
             system=ANSWER_SYSTEM,
             messages=messages,
@@ -552,7 +562,8 @@ def _is_cancel_request(question: str, logger) -> bool:
     try:
         resp = anthropic_client.messages.create(
             model=SELECTOR_MODEL,
-            max_tokens=10,
+            max_tokens=64,
+            thinking={"type": "disabled"},
             system=(
                 "A task the assistant started is currently still running for the user. "
                 "Decide if the user's new message is telling the assistant to STOP, cancel, "
@@ -562,6 +573,7 @@ def _is_cancel_request(question: str, logger) -> bool:
             ),
             messages=[{"role": "user", "content": q}],
             output_config={
+                "effort": SELECTOR_EFFORT,
                 "format": {
                     "type": "json_schema",
                     "schema": {
