@@ -1,5 +1,10 @@
 1. setup a DB for storing personalized user data the AI can access as needed
 2. Arazoza worksheet formatter:
+    - put the data-formatting into its own worksheet so iriginal data is preserved
+    - fix macros not working
+    - AI is being too generous w/ renaming / fixing typos
+        - especially with group names, this should stay the way it is
+        - fixing typos is primarily important w/ latin names
     - the last column at the end called 'column1' needs to be filled w/ scraped data from the 'QTY' column on the attached schedule
         - when the user sends in an Arazoza job request, there should be a schedule (or schedules) along with the worksheet file you're modifying
         - these schedules will be images, the names corresponding to 
@@ -28,3 +33,7 @@
     - ~~its success output message should use a success emoji, like a green checkbox or the tada icon~~
     - ~~needing feedback should preface with a question mark or warning icon or similar to indicate it needs something from the user~~
     - ~~a true failure/emergency output message should use a failure emoji, like a red x~~
+8. See if we can reduce the size of the model being used for tasks
+    - haiku is probably appropriate for most tasks
+    - anything that requires more thinking/reasoning could use sonnet
+    - opus is probably never necessary, except perhaps for the schedule extractor (if there's complicated image data extraction)
