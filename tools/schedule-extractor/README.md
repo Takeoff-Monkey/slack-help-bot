@@ -38,6 +38,10 @@ one column. Instead the **whole image** goes straight to Textract table recovery
 - **One image → one sheet.** Textract often splits one schedule into several tables (each
   seed-mix block comes back separately); they are merged back into one sheet, with a blank row
   between blocks.
+- **No header row is fine.** If the first row doesn't read like column headings (no
+  "QTY"/"SIZE"/"NAME"-style words, or it carries numbers), every row is kept as data and the
+  columns go unnamed, so a section label like "CANOPY TREE" never becomes a column name. The
+  botanical/common split still runs and names its own two columns.
 - **Stray boxes are dropped.** A "table" with fewer than two filled rows or columns (a
   title-block cell, a boxed note) is left out. An image with no table at all produces no sheet.
 - **A photo of a whole sheet** works, but every table on it lands in that sheet (title block,

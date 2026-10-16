@@ -522,6 +522,11 @@ def split_plant_name(text, threshold=0.7):
             hit = pick(parts[0], parts[1])
             if hit:
                 return hit
+    # A slash is the schedule's own separator. If it didn't settle the order, guessing at a word
+    # boundary elsewhere only splits in the wrong place ("SOD" / "BUCHLOE DACTYLOIDES ...");
+    # split_name_columns decides these from how the rest of the column is written.
+    if "/" in text:
+        return None
     # 3. Nothing between them (Textract flattens a two-line cell): try every word boundary
     #    and keep the clearest one.
     tokens = _tokens(text.replace("\n", " "))
@@ -549,12 +554,68 @@ def format_botanical(name):
     out = []
     for i, tok in enumerate(_tokens(name)):
         if _QUOTED.fullmatch(tok):
-            out.append(tok[0] + tok[1:-1].title() + tok[-1])
+            out.append(tok[0] + title_case(tok[1:-1]) + tok[-1])
         elif i == 0:
             out.append(tok.capitalize())
         else:
             out.append(tok.lower())
     return " ".join(out)
+
+
+# str.title() capitalizes after every apostrophe ("WHALE'S" -> "Whale'S") and lowercases units
+# ("SF" -> "Sf", "B&B" -> "B&b"). Words keep their apostrophes; a few units stay as written.
+_KEEP_UPPER = {"SF", "LF", "SY", "CY", "EA", "OC", "O.C.", "B&B", "BB", "DBH"}
+_WORD = re.compile(r"[A-Za-z][A-Za-z.&]*(?:'[A-Za-z]+)?")
+
+
+def title_case(text):
+    def fix(m):
+        w = m.group(0)
+        return w if w.isupper() and w in _KEEP_UPPER else w.capitalize()
+    return _WORD.sub(fix, text)
+
+
+# Words a real header cell is made of. A screenshot cropped to the table body has no header row,
+# and treating its first row as one put a section label ("CANOPY TREE") up as a column name —
+# which also hid the plant-name column from the botanical/common split.
+_HEADER_WORDS = re.compile(
+    r"\b(qty|quan|quantity|count|no|sym|symbol|key|code|abbr|abbrev|name|names|botanical|common|"
+    r"plant|plants|species|size|spacing|spread|height|ht|cal|caliper|cont|container|remarks|"
+    r"notes|comments|description|desc|type|item|material|condition|unit|units|area|mature)\b\.?",
+    re.IGNORECASE,
+)
+
+
+def looks_like_header(row):
+    """True when some cell reads like a column heading: a few words, no digits (data rows carry
+    sizes and counts), and a heading word."""
+    for cell in row:
+        cell = str(cell or "").strip()
+        if cell and len(cell.split()) <= 4 and not re.search(r"\d", cell) and _HEADER_WORDS.search(cell):
+            return True
+    return False
+
+
+def _split_by_column_order(text, botanical_first):
+    """A slash-separated cell split_plant_name found too close to call, settled by the order the
+    rest of the column uses ("AGAVE OVATIFOLIA / WHALE'S TONGUE AGAVE" in a column of
+    BOTANICAL / COMMON rows). Still needs the botanical side to lean Latin and hold a
+    Latin-looking word, so a section label like "GRASS MEADOW / BLUESTEM" stays whole."""
+    if not isinstance(text, str):
+        return None
+    parts = [p.strip() for p in text.split("/") if p.strip()]
+    if len(parts) != 2:
+        return None
+    bot, com = parts if botanical_first else parts[::-1]
+    mixed_case = text != text.upper() and text != text.lower()
+    tb, tc = _tokens(bot), _tokens(com)
+    if not tb or not tc or not _plausible_botanical(tb):
+        return None
+    if _side_score(tb, mixed_case) <= _side_score(tc, mixed_case):
+        return None
+    if not any(_latin_score(t, mixed_case) > 0 for t in tb):
+        return None
+    return bot, com
 
 
 def _is_subheader(row, col):
@@ -590,6 +651,12 @@ def split_name_columns(df):
         hits = sum(1 for s in splits if s)
         if not candidates or hits / candidates < (0.3 if combined_header else 0.5):
             continue
+        # Schedules write every row the same way round, so the clear rows settle the close ones.
+        bot_first = sum(1 for v, s in zip(values, splits) if s and v.strip().startswith(s[0]))
+        if bot_first * 2 != hits:
+            for r, (v, s) in enumerate(zip(values, splits)):
+                if s is None and isinstance(v, str) and v.strip() and not _is_subheader(rows[r], col):
+                    splits[r] = _split_by_column_order(v, botanical_first=bot_first * 2 > hits)
 
         common_first = combined_header and header.find("common") < min(
             header.find(k) for k in _BOTANICAL_HEADERS if k in header)
@@ -599,12 +666,12 @@ def split_name_columns(df):
         first, second = [], []
         for v, s in zip(values, splits):
             if s:
-                names = {"Botanical Name": format_botanical(s[0]), "Common Name": s[1].title()}
+                names = {"Botanical Name": format_botanical(s[0]), "Common Name": title_case(s[1])}
                 first.append(names[order[0]])
                 second.append(names[order[1]])
             else:
                 # Title Cased here: the botanical column is skipped by save_excel's pass.
-                first.append(v.title() if isinstance(v, str) else v)
+                first.append(title_case(v) if isinstance(v, str) else v)
                 second.append("")
         new = [(order[0], first), (order[1], second)]
         df = df.drop(columns=df.columns[col])
@@ -638,10 +705,17 @@ def save_excel(data : dict, filename : str, stripped : bool = False,
                         table_data = table_data[1:]
                         w += 1
                     
-                    # Format header row
+                    # Format header row. With no header row at all (a screenshot of just the
+                    # table body), every row is data and the columns go unnamed — the split
+                    # below names the plant-name pair itself.
                     num_columns = max(len(row) for row in table_data)
-                    df_columns = table_data[0] + [" " * k for k in range(1, (num_columns - len(table_data[0])) + 1)]
-                    df = pd.DataFrame(table_data[1:], columns=df_columns)
+                    if looks_like_header(table_data[0]):
+                        df_columns = table_data[0] + [" " * k for k in range(1, (num_columns - len(table_data[0])) + 1)]
+                        body = table_data[1:]
+                    else:
+                        df_columns = [" " * k for k in range(1, num_columns + 1)]
+                        body = table_data
+                    df = pd.DataFrame(body, columns=df_columns)
                     # Botanical / common split goes first: it reads the original casing
                     # (a lowercase species epithet) and formats the botanical names itself.
                     if split_names:
@@ -654,7 +728,7 @@ def save_excel(data : dict, filename : str, stripped : bool = False,
                     # botanical names, which aren't Title Case)
                     for j in range(1 if ignore_first_column else 0, df.shape[1]):
                         if str(df.columns[j]) != "Botanical Name":
-                            df.iloc[:, j] = df.iloc[:, j].map(lambda x: x.title() if isinstance(x, str) else x)
+                            df.iloc[:, j] = df.iloc[:, j].map(lambda x: title_case(x) if isinstance(x, str) else x)
                 except Exception:
                     df = pd.DataFrame(table_data)
                 
