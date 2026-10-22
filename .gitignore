@@ -14,6 +14,7 @@ env/
 .env
 .envrc
 .claude/settings.json
+.claude/_settings.json
 .claude/work-key.sh
 g-sheets-experiments-c48bb50fa78e.json
 
