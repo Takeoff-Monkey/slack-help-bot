@@ -29,7 +29,10 @@ TOOL_DIR = HERE.parent
 sys.path.insert(0, str(TOOL_DIR))
 sys.path.insert(0, str(HERE))
 
+os.environ.pop("ANTHROPIC_API_KEY", None)   # never call Claude from tests (run.py inherits this too)
+
 import formatter            # noqa: E402
+import latin                # noqa: E402
 import make_fixture         # noqa: E402
 
 _DEFAULT_SAMPLES = TOOL_DIR.parents[2] / "Sample_test_sheets" if len(TOOL_DIR.parents) > 2 else Path("/nonexistent")
@@ -308,37 +311,29 @@ class SyntheticEndToEndTests(unittest.TestCase):
         self.assertEqual(self.report.columns, {"description": "B", "size": "C", "package": "D", "notes": "E", "qty": "F", "uom": "G"})
 
     # step 1 ------------------------------------------------------------------------
-    def test_step1_black_headers_relabelled(self):
-        self.assertEqual(self.val("B18"), "1 - Trees & Palms")
-        self.assertEqual(self.val("B22"), "1 - Trees & Palms")
-        self.assertEqual(self.val("B28"), "31 - Mulch (SY)")
-        self.assertEqual(self.val("B32"), "4 - Soil")
-        self.assertEqual(self.val("B36"), "154 - Bed Preparation")
-        self.assertEqual(self.val("B39"), "15 - Sod (SF)")
-        self.assertEqual(self.val("B49"), "1 - Trees & Palms")
-        for ref in ("B18", "B22", "B28", "B32", "B36", "B39", "B49"):
-            self.assertFalse(_red(self.cell(ref)), ref)
+    def test_step1_group_headers_are_left_exactly_as_written(self):
+        # TODO #2: group names stay the way the estimator wrote them — matched, ambiguous or
+        # unknown, none is relabelled and none is painted red
+        raw = openpyxl.load_workbook(make_fixture.build_synthetic_raw(Path(self.tmp.name) / "raw-again.xlsx"))["Project Totals"]
+        rows = [r for r, _, _ in self.report.group_headers]
+        self.assertEqual(rows, [18, 22, 25, 28, 32, 36, 39, 41, 43, 46, 49, 51, 53])
+        for r in rows:
+            with self.subTest(row=r):
+                self.assertEqual(self.val(f"B{r}"), raw[f"B{r}"].value)
+                self.assertFalse(_red(self.cell(f"B{r}")))
 
-    def test_step1_already_final_header_untouched_and_counted(self):
-        self.assertEqual(self.val("B43"), "1 - Trees & Palms")
-        self.assertIn((43, "1 - Trees & Palms"), self.report.groups_unchanged)
+    def test_step1_still_knows_which_grouping_each_header_names(self):
+        # ...because the depth rule needs to know which items sit under Soil / Mulch
+        named = {r: label for r, _, label in self.report.group_headers}
+        self.assertEqual(named[28], "31 - Mulch (SY)")
+        self.assertEqual(named[32], "4 - Soil")
+        self.assertIsNone(named[25])            # ambiguous
+        self.assertIsNone(named[41])            # unknown
 
     def test_step1_coloured_section_marker_skipped(self):
         self.assertEqual(self.val("B16"), "Landscape")
         self.assertFalse(_red(self.cell("B16")))
         self.assertIn((16, "Landscape"), self.report.groups_skipped_colored)
-
-    def test_step1_unmatched_and_ambiguous_filled_red_and_text_kept(self):
-        for ref, text in (("B25", "Shrubs & Groundcover"), ("B41", "Irrigation Sleeves"), ("B46", "PLANTING PLAN - SITE")):
-            with self.subTest(ref=ref):
-                self.assertEqual(self.val(ref), text)
-                self.assertTrue(_red(self.cell(ref)))
-        reasons = {row: reason for row, _, reason in self.report.groups_flagged}
-        self.assertTrue(reasons[25].startswith("ambiguous"), reasons[25])
-        self.assertIn("2 - Shrubs", reasons[25])
-        self.assertIn("9 - Groundcover", reasons[25])
-        self.assertEqual(reasons[41], "no match")
-        self.assertEqual(reasons[46], "no match")
 
     # step 2 ------------------------------------------------------------------------
     def test_summary_says_when_it_held_notes_back(self):
@@ -361,7 +356,7 @@ class SyntheticEndToEndTests(unittest.TestCase):
         self.assertEqual(self.val("G45"), "EA")                # not even its UOM
         self.assertTrue(_red(self.cell("B45")))
         self.assertEqual(self.report.conflicts, [(45, "Root Barrier", "Conflict item, cont")])
-        self.assertNotIn(45, [r for r, _, _ in self.report.groups_matched])
+        self.assertNotIn(45, [r for r, _, _ in self.report.group_headers])
         self.assertNotIn(45, [r for r, _ in self.report.packages_set])
 
     # steps 3 + 4 -------------------------------------------------------------------
@@ -402,9 +397,9 @@ class SyntheticEndToEndTests(unittest.TestCase):
         self.assertTrue(any("row 57" in w and "date" in w for w in self.report.warnings), self.report.warnings)
 
     def test_header_rows_keep_their_notes_and_are_never_merged(self):
-        # a matched header with a note, and a coloured marker with a note: label/marker untouched,
+        # a header with a note, and a coloured marker with a note: label/marker untouched,
         # note left in Notes, nothing in Size or Package
-        self.assertEqual(self.val("B51"), "31 - Mulch (SY)")
+        self.assertEqual(self.val("B51"), "Mulch")
         self.assertEqual(self.val("E51"), '3" depth cont')
         self.assertIsNone(self.val("C51"))
         self.assertIsNone(self.val("D51"))
@@ -454,9 +449,9 @@ class SyntheticEndToEndTests(unittest.TestCase):
         self.assertEqual(self.val("D52"), "Depth")            # not 'Container/Depth'
 
     def test_step5_soil_mulch_context_stops_at_a_flagged_or_coloured_header(self):
-        # 'Crushed Granite' sits under the flagged 'Decorative Stone', which follows the Mulch
+        # 'Crushed Granite' sits under 'Decorative Stone' (no grouping), which follows the Mulch
         # group — it is NOT a mulch item, so its depth stays in the text and its package is read
-        self.assertTrue(_red(self.cell("B53")))
+        self.assertIsNone(dict((r, l) for r, _, l in self.report.group_headers)[53])
         self.assertEqual(self.val("B54"), 'Crushed Granite - 4" depth, cont')
         self.assertEqual(self.val("C54"), '4" depth, cont')
         self.assertEqual(self.val("D54"), "Container")
@@ -476,8 +471,8 @@ class SyntheticEndToEndTests(unittest.TestCase):
         self.assertEqual(self.val("B60"), "Existing Tree to Remain")
         for ref in ("B59", "B60"):
             self.assertFalse(_red(self.cell(ref)), ref)
-        self.assertNotIn(59, [r for r, _, _ in self.report.groups_matched])
-        self.assertNotIn(60, [r for r, _, _ in self.report.groups_matched])
+        self.assertNotIn(59, [r for r, _, _ in self.report.group_headers])
+        self.assertNotIn(60, [r for r, _, _ in self.report.group_headers])
         # ...and the item steps still run on it: 'pine straw' is mulch, so the depth applies
         self.assertEqual(self.val("C59"), '3"')
         self.assertEqual(self.val("D59"), "Depth")
@@ -540,13 +535,74 @@ class SyntheticEndToEndTests(unittest.TestCase):
     def test_summary_mentions_what_matters(self):
         s = self.report.summary("raw.xlsx", "raw - formatted.xlsx")
         self.assertIn("RED", s)
-        self.assertIn("row 25", s)
-        self.assertIn("Irrigation Sleeves", s)
         self.assertIn("row 45", s)
-        self.assertIn("'Trees' → '1 - Trees & Palms'", s)
+        self.assertIn("13 headers left exactly as written", s)
+        self.assertIn("'Project Totals (original)'", s)
+        self.assertIn("not spell-checked", s)
         self.assertIn("UOM converted", s)
         self.assertIn("Packages filled", s)
         self.assertLess(len(s), 3000)
+
+
+class LatinNameTests(unittest.TestCase):
+    """Step 2b: only small spelling fixes to Latin words get through, whatever the model says."""
+
+    def test_accepts_a_latin_spelling_fix_and_keeps_the_estimators_casing(self):
+        self.assertEqual(latin.accept("Quercus virginana / Live Oak", "Quercus virginiana / Live Oak"),
+                         "Quercus virginiana / Live Oak")
+        self.assertEqual(latin.accept("QUERCUS VIRGINANA", "Quercus virginiana"), "QUERCUS VIRGINIANA")
+        self.assertEqual(latin.accept("Sabal palmeto,  FG", "Sabal palmetto, FG"), "Sabal palmetto,  FG")
+
+    def test_rejects_anything_that_is_not_a_small_spelling_fix(self):
+        for original, proposed in (
+            ("Live Oke", "Live Oak Tree"),                          # word count changed
+            ("Ilex vomitoria 'Shillings'", "Ilex vomitoria 'Schillings'"),   # inside a cultivar's quotes
+            ("Podocarpus", "Ficus"),                                # not a near spelling
+            ("Ilx glabra", "Ilex glabra"),                          # word too short to judge
+            ("Quercus virginana sp", "Quercus virginiana spp."),    # punctuation added
+            ("Qurcus virgnana mulch bedd", "Quercus virginiana mulch bed"),   # three words changed
+            ("Quercus virginiana", "Quercus virginiana"),           # no change
+        ):
+            with self.subTest(original=original):
+                self.assertIsNone(latin.accept(original, proposed))
+
+    def test_fix_latin_names_drops_bad_ids_and_unsafe_proposals(self):
+        ask = lambda items: [
+            {"id": items.index("Quercus virginana"), "corrected": "Quercus virginiana"},
+            {"id": items.index("Code Req.Shrubs"), "corrected": "Code Required Shrubs"},
+            {"id": 99, "corrected": "x"},
+        ]
+        fixes = latin.fix_latin_names(["Quercus virginana", "Code Req.Shrubs", "Quercus virginana", ""], ask=ask)
+        self.assertEqual(fixes, {"Quercus virginana": "Quercus virginiana"})
+
+    def test_step2b_only_sees_item_names_and_writes_accepted_fixes(self):
+        seen = []
+
+        def fixer(texts):
+            seen.extend(texts)
+            return {"Quercus virginiana / Live Oak": "Quercus virginiana / Live Oak (checked)"}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            raw = make_fixture.build_synthetic_raw(Path(tmp) / "raw.xlsx")
+            report = formatter.format_file(raw, Path(tmp) / "out.xlsx", latin_fixer=fixer)
+            ws = openpyxl.load_workbook(Path(tmp) / "out.xlsx")["Project Totals"]
+        self.assertEqual(len(seen), report.items_moved)      # one text per moved item, nothing else
+        for header in ("Shrubs & Groundcover", "Irrigation Sleeves", "Decorative Stone", "PLANTING PLAN - SITE"):
+            self.assertNotIn(header, seen, "group headers must never be sent for spell-checking")
+        self.assertEqual(report.latin_fixed, [(19, "Quercus virginiana / Live Oak", "Quercus virginiana / Live Oak (checked)")])
+        self.assertTrue(ws["B19"].value.startswith("Quercus virginiana / Live Oak (checked) - 45 G"))
+        self.assertIn("Latin names: fixed the spelling on 1 item", report.summary("a", "b"))
+
+    def test_a_failed_spell_check_is_reported_not_fatal(self):
+        def broken(texts):
+            raise RuntimeError("API down")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            raw = make_fixture.build_synthetic_raw(Path(tmp) / "raw.xlsx")
+            report = formatter.format_file(raw, Path(tmp) / "out.xlsx", latin_fixer=broken)
+        self.assertEqual(report.latin_fixed, [])
+        self.assertIn("RuntimeError", report.latin_skipped)
+        self.assertIn("not spell-checked", report.summary("a", "b"))
 
 
 class SafetyTests(unittest.TestCase):
@@ -562,8 +618,6 @@ class SafetyTests(unittest.TestCase):
             # ...and this is why the guard exists: on a finished sheet every item has BOTH
             # Description and Size filled, so each one is a conflict row — red-filled, untouched.
             self.assertEqual([r for r, _, _ in report.conflicts], [17, 18])
-            self.assertEqual(report.groups_flagged, [])
-            self.assertEqual(report.groups_matched, [])
             self.assertEqual(report.items_moved, 0)
 
     def test_rejects_unsupported_extension(self):
@@ -664,20 +718,16 @@ class VelaCoveGoldenTests(unittest.TestCase):
     def test_same_number_of_rows(self):
         self.assertEqual(len(self.pairs), 57)
 
-    def test_every_group_header_lands_on_the_humans_label(self):
-        headers = [(a, self.tool.cell(a, 2).value, self.human.cell(b, 2).value)
-                   for a, b in self.pairs if self.tool.cell(a, 2).font.b]
-        self.assertEqual(len(headers), 9)                     # 'Landscape' + 8 groups
-        for row, got, want in headers:
-            with self.subTest(row=row):
-                self.assertEqual(got, want)
-        self.assertEqual(sorted(t for _, t, _ in self.report.groups_matched),
-                         sorted(["01 - Code Trees", "02 - Tree Mitigation", "03 - Additional Shrubs & Gc", "04 - Code Req.Shrubs",
-                                 "05 - Bed Areas", "06 - Edging", "07 - Seed & Sod", "08 - Soil"]))
-        self.assertEqual([t for _, t, _ in self.report.groups_by_items], ["07 - Seed & Sod"])
+    def test_group_headers_keep_arazozas_own_names(self):
+        # TODO #2 reversed the old relabelling: OST's group names stay as they came
+        raw = openpyxl.load_workbook(VELA_RAW)["Project Totals"]
+        self.assertEqual([t for _, t, _ in self.report.group_headers],
+                         ["01 - Code Trees", "02 - Tree Mitigation", "03 - Additional Shrubs & Gc", "04 - Code Req.Shrubs",
+                          "05 - Bed Areas", "06 - Edging", "07 - Seed & Sod", "08 - Soil"])
+        for r, text, _ in self.report.group_headers:
+            self.assertEqual(self.tool.cell(r, 2).value, raw.cell(r, 2).value)
 
     def test_nothing_is_flagged_red(self):
-        self.assertEqual(self.report.groups_flagged, [])
         self.assertEqual(self.report.conflicts, [])
         for a, _ in self.pairs:
             self.assertFalse(_red(self.tool.cell(a, 2)), f"row {a} is red")
@@ -688,7 +738,10 @@ class VelaCoveGoldenTests(unittest.TestCase):
         human_extras = {"3\" Depth of Mulch": "3\" Depth of Mulch - Bulk Organic Mulch",
                         "4\"-6\" Size, 10\" Depth of Riprap Rock Bed": "4\"-6\" Size, 10\" Depth of Riprap Rock Bed/W weed Fabric"}
         diffs = []
+        headers = {r for r, _, _ in self.report.group_headers}
         for a, b in self.pairs:
+            if a in headers:
+                continue                                       # the human relabelled these; we no longer do
             tb, hb = formatter._txt(self.tool.cell(a, 2).value), formatter._txt(self.human.cell(b, 2).value)
             if squash(tb) != squash(hb) and human_extras.get(tb) != hb:
                 diffs.append(("B", a, tb, hb))
@@ -718,9 +771,34 @@ class VelaCoveGoldenTests(unittest.TestCase):
         names = zipfile.ZipFile(self.out).namelist()
         self.assertIn("xl/vbaProject.bin", names)
         wb = openpyxl.load_workbook(self.out, keep_vba=True)
-        self.assertEqual(wb.sheetnames, openpyxl.load_workbook(VELA_RAW, keep_vba=True).sheetnames)
+        self.assertEqual(wb.sheetnames, openpyxl.load_workbook(VELA_RAW, keep_vba=True).sheetnames
+                         + ["Project Totals (original)"])
         self.assertIn("Sheet1", wb.sheetnames)
         self.assertEqual(dict(self.tool.tables.items()), {"LH_materials_list_tbl": "B15:T140"})
+
+    def test_macros_ribbon_and_shapes_come_through_byte_for_byte(self):
+        # The bug behind TODO #2 "macros stop working": openpyxl.save() dropped the customUI
+        # relationship, so the Takeoff Monkey ribbon (and its Arazoza Export button) vanished.
+        src, out = zipfile.ZipFile(VELA_RAW), zipfile.ZipFile(self.out)
+        changed = {"xl/styles.xml", "xl/workbook.xml", "xl/_rels/workbook.xml.rels", "[Content_Types].xml",
+                   "xl/worksheets/sheet5.xml"}
+        for name in src.namelist():
+            if name in changed or name == "xl/calcChain.xml":
+                continue
+            with self.subTest(part=name):
+                self.assertEqual(src.read(name), out.read(name))
+        self.assertIn(b"customUI", out.read("_rels/.rels"))
+        self.assertNotIn("xl/calcChain.xml", out.namelist())
+
+    def test_original_data_sheet_is_the_raw_input(self):
+        raw = openpyxl.load_workbook(VELA_RAW)["Project Totals"]
+        copy_ = openpyxl.load_workbook(self.out)["Project Totals (original)"]
+        for row in raw.iter_rows(min_row=1, max_row=140, max_col=10):
+            for cell in row:
+                if not formatter._is_formula(cell.value):
+                    self.assertEqual(copy_[cell.coordinate].value, cell.value, cell.coordinate)
+        self.assertEqual(copy_.tables, {})
+        self.assertNotEqual(copy_["K16"].data_type, "f")            # formulas became their values
 
 
 class LambdaHandlerTests(unittest.TestCase):
@@ -755,7 +833,7 @@ class LambdaHandlerTests(unittest.TestCase):
             self.assertEqual(art["filename"], "Arazoza - Fixture - Worksheet 2026-09-04 - formatted.xlsx")
             self.assertIn(art["ref"], store)
             out = openpyxl.load_workbook(__import__("io").BytesIO(store[art["ref"]]))["Project Totals"]
-            self.assertEqual(out["B18"].value, "1 - Trees & Palms")
+            self.assertEqual(out["B18"].value, "Trees")
             self.assertIn("RED", res["summary"])
 
     def test_error_path_is_a_result_not_an_exception(self):
@@ -792,7 +870,14 @@ class RealSampleTests(unittest.TestCase):
 
     def test_descriptions_sizes_and_uoms_match_the_human_made_sheet(self):
         mismatches = []
+        raw = openpyxl.load_workbook(self.raw)["Project Totals"]
+        for row, _, _ in self.report.group_headers:      # headers: kept as the input had them
+            if self.ws.cell(row, 2).value != raw.cell(row, 2).value:
+                mismatches.append((row, self.ws.cell(row, 2).value, raw.cell(row, 2).value))
+        headers = {r for r, _, _ in self.report.group_headers}
         for row, exp in self.expected.items():
+            if row in headers:
+                continue
             got_b = formatter._txt(self.ws.cell(row, 2).value)
             got_c = formatter._txt(self.ws.cell(row, 3).value)
             got_g = formatter._txt(self.ws.cell(row, 7).value)
@@ -819,7 +904,6 @@ class RealSampleTests(unittest.TestCase):
                 self.assertEqual(formatter._txt(self.ws.cell(row, 4).value), "", f"row {row}")
 
     def test_nothing_flagged_red_on_a_clean_sheet(self):
-        self.assertEqual(self.report.groups_flagged, [])
         self.assertEqual(self.report.conflicts, [])
         self.assertEqual(self.report.groups_skipped_colored, [(16, "Landscape")])
 
@@ -828,8 +912,8 @@ class RealSampleTests(unittest.TestCase):
         self.assertIn("xl/vbaProject.bin", names)
         self.assertTrue(any(n.startswith("customUI/") for n in names))
         src = openpyxl.load_workbook(FINISHED_SAMPLE, keep_vba=True)
-        self.assertEqual(self.wb.sheetnames, src.sheetnames)
-        self.assertEqual([s.sheet_state for s in self.wb.worksheets], [s.sheet_state for s in src.worksheets])
+        self.assertEqual(self.wb.sheetnames, src.sheetnames + ["Project Totals (original)"])
+        self.assertEqual([s.sheet_state for s in self.wb.worksheets][:-1], [s.sheet_state for s in src.worksheets])
         self.assertEqual(dict(self.ws.tables.items()), {"LH_materials_list_tbl": "B15:T140"})
         # the import formulas in K..T are carried through verbatim
         for row in (16, 40, 140):
@@ -852,7 +936,7 @@ class RealSampleTests(unittest.TestCase):
         out2 = Path(self.tmp.name) / "below-out.xlsm"
         report = formatter.format_file(raw2, out2)
         ws = openpyxl.load_workbook(out2, keep_vba=True)["Project Totals"]
-        self.assertEqual(ws["B141"].value, "9 - Groundcover")
+        self.assertEqual(ws["B141"].value, "Groundcover")
         self.assertEqual(ws["B142"].value, "Liriope muscari / Lilyturf - 1 G")
         self.assertEqual(ws["B143"].value, "Beyond-table item - 3 G cont")
         self.assertEqual(ws["D143"].value, "Container")
@@ -887,16 +971,17 @@ class AllLandscapeSamplesTests(unittest.TestCase):
                 import re
                 squash = lambda t: re.sub(r"\s+", " ", t)      # a human's stray double space is not a defect
                 mismatches = []
+                headers = {r for r, _, _ in report.group_headers}
                 for row, exp in expected.items():
+                    if row in headers:
+                        continue                                # kept as written, not relabelled
                     got = (squash(formatter._txt(ws.cell(row, 2).value)), formatter._txt(ws.cell(row, 3).value),
                            formatter._txt(ws.cell(row, 7).value))
                     if got != (squash(exp["B"]), exp["C"], exp["G"]):
                         mismatches.append((row, got, (exp["B"], exp["C"], exp["G"])))
                 self.assertEqual(mismatches, [], "\n".join(map(str, mismatches)))
                 self.assertGreater(len(expected), 20, name)
-                # only the plan-section sub-headers a human wrote in black may be red
-                for _, text, _ in report.groups_flagged:
-                    self.assertIn("PLAN", text.upper(), f"{name}: unexpected red header {text!r}")
+                self.assertEqual(report.conflicts, [], name)
 
 
 if __name__ == "__main__":

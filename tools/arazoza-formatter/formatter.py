@@ -8,14 +8,18 @@ fixed sequence of moves that puts everything where the worksheet (and the downst
 expects it, and paints red anything a human still has to look at.
 
 THE ORDER OF THE STEPS IS THE SPEC (TODO #6). Each step reads what the previous one wrote:
-the group matching has to run while `Description` still holds only the headers, the ' - '
+the group headers have to be read while `Description` still holds only the headers, the ' - '
 merge only after `Notes` has become `Size`, the depth rule only after the merge, and so on.
 Reordering them yields plausible-looking but wrong data, so `format_worksheet` is the single
 place that sequences them and nothing else calls the steps directly.
 
-  1. Match every BLACK-text `Description` cell to a takeoff grouping (takeoff-groupings.txt);
-     no match or an ambiguous match -> the cell is filled red.
+  1. Read every BLACK-text `Description` cell as a group header and note which takeoff
+     grouping (takeoff-groupings.txt) it names. The header text itself is LEFT AS WRITTEN
+     (TODO #2: group names stay the way the estimator wrote them); the grouping is only used
+     by step 5 to know which items sit under a Soil or Mulch group.
   2. Move every `Size` value into the (empty) `Description` cell on its row.
+     2b. Fix misspelled botanical (Latin) names in those item names — only Latin words, only
+         small spelling fixes (latin.py). Nothing else on the sheet is re-spelled.
   3. Move every `Notes` value into the (now empty) `Size` cell on its row.
   4. Description = Description + " - " + Size (where both exist).
   5. Soil/mulch items whose text says "depth": Size = the depth measurement, Package += Depth.
@@ -24,13 +28,14 @@ place that sequences them and nothing else calls the steps directly.
      A Size with a gallon plant size (Gal, gallon, "45 G") and no package token -> Container.
 
 Two kinds of row are protected from the item steps: rows that held a header at step 1
-(matched, flagged or coloured — their label, note and cells are left as they are), and rows
+(with or without a grouping, or coloured — their label, note and cells are left as they are), and rows
 that had BOTH a Description and a Size to begin with (the spec says that never happens on a
 well-formed sheet; when it does, the row is red-filled and left exactly as it came).
 
-Pure openpyxl (no pandas). Handles .xlsx and .xlsm — a macro workbook is loaded with
-keep_vba=True so its VBA, tables (incl. calculated columns), formulas and defined names are
-carried through to the output untouched.
+openpyxl only READS the workbook. The steps record each cell they change in an EditLog, and
+xlsx_package.write_package applies those edits to a byte-for-byte copy of the original file,
+adding a "<sheet> (original)" tab holding the data as it arrived. Saving through openpyxl
+dropped the template's ribbon (and with it every macro button), its shapes and customXml.
 """
 
 from __future__ import annotations
@@ -46,6 +51,9 @@ from pathlib import Path
 
 import openpyxl
 from openpyxl.cell.cell import MergedCell
+
+import latin
+from xlsx_package import EditLog, original_copy_name, write_package
 from openpyxl.styles import PatternFill
 from openpyxl.utils import range_boundaries
 from openpyxl.worksheet.worksheet import Worksheet
@@ -289,23 +297,23 @@ def load_groupings(path: Path = GROUPINGS_FILE) -> list[Grouping]:
 
 @dataclass
 class GroupMatch:
-    label: str | None          # the grouping to write, or None when flagged
+    label: str | None          # the grouping the header names, or None
     reason: str                # "matched" | "no match" | "ambiguous: A / B"
     score: float = 0.0
     candidates: tuple = ()     # labels still in the running when the header alone couldn't decide
 
 
 def match_grouping(text: str, groupings: list[Grouping]) -> GroupMatch:
-    """Closest grouping for a header cell's text — or None with the reason it must be flagged.
+    """Closest grouping for a header cell's text — or None with the reason there is none.
 
     A grouping is a candidate only if at least one word of the header IS one of its words
     (exactly, or the same stem: "Mulching" ~ "mulch"). Resemblances ("Streetscape" ~ "tree",
-    "Project" ~ "protect") never qualify on their own, so they can't quietly relabel a header.
+    "Project" ~ "protect") never qualify on their own, so they can't quietly put a header in the wrong group.
 
     Among candidates, one that explains every strongly-matched word another one explains
     wins ("Remove & Replace" -> Remove/Replace, not Replacements). Two candidates that each
     explain words the other doesn't are exactly the spec's "more than one match" — "Shrubs &
-    Groundcover", "Trees, Palms & Shrubs", "Tree Protection" — and the cell is flagged."""
+    Groundcover", "Trees, Palms & Shrubs", "Tree Protection" — and no grouping is chosen."""
     cell_tokens = _tokens(text)
     if not cell_tokens:
         return GroupMatch(None, "no match")
@@ -348,7 +356,7 @@ def resolve_with_items(header: GroupMatch, item_texts: list[str], groupings: lis
     - Ambiguous header: if exactly one of its candidates gets votes, that one wins.
     - Unmatched header: if every voting item agrees on one grouping, at least two items voted
       and they are at least half the items, that grouping wins.
-    Anything less stays as it was (and gets flagged red)."""
+    Anything less stays as it was (no grouping)."""
     if header.label is not None or not item_texts:
         return header
     votes: dict = {}
@@ -487,15 +495,15 @@ class Report:
     sheet: str = ""
     header_row: int = 0
     columns: dict = field(default_factory=dict)          # role -> column letter
-    # step 1
-    groups_matched: list = field(default_factory=list)    # (row, from, to)
-    groups_by_items: list = field(default_factory=list)   # (row, from, to)  subset of the above, placed by the items beneath
-    groups_unchanged: list = field(default_factory=list)  # (row, label)   already in target form
-    groups_flagged: list = field(default_factory=list)    # (row, text, reason)
+    # step 1 (headers are read, never rewritten)
+    group_headers: list = field(default_factory=list)     # (row, text, grouping label or None)
     groups_skipped_colored: list = field(default_factory=list)   # (row, text)
     # step 2
     items_moved: int = 0
     conflicts: list = field(default_factory=list)         # (row, description, size)
+    # step 2b
+    latin_fixed: list = field(default_factory=list)       # (row, before, after)
+    latin_skipped: str = ""                               # why the Latin check didn't run, if it didn't
     # step 3
     notes_moved: int = 0
     notes_blocked: list = field(default_factory=list)     # (row, size, notes)
@@ -511,41 +519,45 @@ class Report:
     packages_set: list = field(default_factory=list)      # (row, package)
     # anything odd
     warnings: list = field(default_factory=list)
+    # where the output went
+    original_copy_sheet: str = ""
+    # every cell change, for xlsx_package.write_package to replay onto the original file
+    edits: EditLog = field(default_factory=EditLog, repr=False)
 
     @property
     def flagged_count(self) -> int:
-        return len(self.groups_flagged) + len(self.conflicts)
+        return len(self.conflicts)
 
     def summary(self, input_name: str, output_name: str) -> str:
         """What the bot tells the user. Written to be relayed nearly verbatim, so it leads with
         what needs a human (red cells) and keeps the counts to one line each."""
         lines = [f"Formatted sheet '{self.sheet}' of {input_name} → {output_name}."]
+        if self.original_copy_sheet:
+            lines.append(f"The data as it arrived is kept untouched on a new sheet, '{self.original_copy_sheet}'.")
 
-        if self.groups_flagged or self.conflicts:
+        if self.conflicts:
             n = self.flagged_count
             lines.append(f"{n} cell{'s' if n != 1 else ''} filled RED for a human to check:")
-            for row, text, reason in self.groups_flagged[:20]:
-                lines.append(f"  - row {row}: '{_shorten(text)}' ({reason})")
             for row, desc, size in self.conflicts[:10]:
                 lines.append(f"  - row {row}: Description '{_shorten(desc)}' and Size '{_shorten(size)}' were BOTH "
                              f"filled, so that row was left exactly as it came")
-            hidden = n - min(len(self.groups_flagged), 20) - min(len(self.conflicts), 10)
-            if hidden > 0:
-                lines.append(f"  - …and {hidden} more (see the red cells in the file)")
+            if n > 10:
+                lines.append(f"  - …and {n - 10} more (see the red cells in the file)")
         else:
             lines.append("No cells needed flagging.")
 
-        matched = self.groups_matched
-        if matched or self.groups_unchanged:
-            pairs = ", ".join(f"'{_shorten(a, 24)}' → '{b}'" for _, a, b in _dedupe_pairs(matched)[:12])
-            extra = f" ({len(self.groups_unchanged)} already in final form)" if self.groups_unchanged else ""
-            lines.append(f"Groups: {len(matched)} header{'s' if len(matched) != 1 else ''} relabelled{extra}"
-                         + (f": {pairs}" if pairs else "") + ".")
-            if self.groups_by_items:
-                by = ", ".join(f"'{_shorten(a, 24)}' → '{b}'" for _, a, b in self.groups_by_items[:6])
-                lines.append(f"Of those, {len(self.groups_by_items)} named more than one group (or none) and "
-                             f"{'was' if len(self.groups_by_items) == 1 else 'were'} placed by the items listed "
-                             f"under {'it' if len(self.groups_by_items) == 1 else 'them'}: {by}. Worth a glance.")
+        if self.group_headers:
+            n = len(self.group_headers)
+            lines.append(f"Groups: {n} header{'s' if n != 1 else ''} left exactly as written.")
+        if self.latin_fixed:
+            n = len(self.latin_fixed)
+            lines.append(f"Latin names: fixed the spelling on {n} item{'s' if n != 1 else ''} (nothing else was re-spelled):")
+            for row, before, after in self.latin_fixed[:10]:
+                lines.append(f"  - row {row}: '{_shorten(before)}' → '{_shorten(after)}'")
+            if n > 10:
+                lines.append(f"  - …and {n - 10} more")
+        elif self.latin_skipped:
+            lines.append(f"Latin names: not spell-checked this time ({self.latin_skipped}).")
         if self.groups_skipped_colored:
             n = len(self.groups_skipped_colored)
             lines.append(f"Skipped {n} coloured (non-black) Description cell{'s' if n != 1 else ''} as "
@@ -595,16 +607,6 @@ def _shorten(text, n: int = 60) -> str:
     return t if len(t) <= n else t[: n - 1] + "…"
 
 
-def _dedupe_pairs(pairs):
-    seen, out = set(), []
-    for row, a, b in pairs:
-        key = (a.strip().lower(), b)
-        if key not in seen:
-            seen.add(key)
-            out.append((row, a, b))
-    return out
-
-
 # ---------------------------------------------------------------------------------------
 # The steps — only ever called, in order, by format_worksheet
 # ---------------------------------------------------------------------------------------
@@ -615,7 +617,14 @@ def _set(cell, value, report: Report) -> bool:
         report.warnings.append(f"{cell.coordinate} is inside a merged range; I couldn't write to it.")
         return False
     cell.value = value
+    report.edits.set_value(cell.coordinate, value)
     return True
+
+
+def _fill_red(cell, report: Report) -> None:
+    if not isinstance(cell, MergedCell):
+        cell.fill = RED_FILL
+        report.edits.fill_red(cell.coordinate)
 
 
 def _move(src, dst, report: Report) -> bool:
@@ -626,7 +635,9 @@ def _move(src, dst, report: Report) -> bool:
         dst.font = copy(src.font)
     except Exception:
         pass
+    report.edits.copy_font(dst.coordinate, src.coordinate)
     src.value = None
+    report.edits.set_value(src.coordinate, None)
     return True
 
 
@@ -641,14 +652,16 @@ def _find_conflicts(layout: Layout) -> set:
     }
 
 
-def _step1_match_groups(layout: Layout, groupings: list[Grouping], report: Report, skip: set) -> dict:
-    """Relabel black Description headers; red-fill the unmatched/ambiguous. A header the text
-    alone can't place gets a second opinion from the items beneath it (resolve_with_items).
+def _step1_read_groups(layout: Layout, groupings: list[Grouping], report: Report, skip: set) -> dict:
+    """Read the black Description headers and work out which grouping each one names. The
+    cells are never written: group names stay exactly as the estimator typed them. A header
+    the text alone can't place gets a second opinion from the items beneath it
+    (resolve_with_items).
 
     Returns row -> label for EVERY row that held a header: the grouping label where one
-    matched (or was already there), None where the header was flagged or is a coloured
-    section marker. Later steps use the keys to leave header rows alone, and the depth rule
-    uses the values to know which group — if any recognised one — an item sits under."""
+    matched, None where none did or it is a coloured section marker. Later steps use the keys
+    to leave header rows alone, and the depth rule uses the values to know which group — if
+    any recognised one — an item sits under."""
     header_rows: dict = {}
     # A row already holding text in Description is a group header — unless it also carries a
     # quantity, which no header on these sheets ever does. That one is an item somebody typed
@@ -672,20 +685,29 @@ def _step1_match_groups(layout: Layout, groupings: list[Grouping], report: Repor
             until = candidates[i + 1] if i + 1 < len(candidates) else layout.last_row + 1
             items = [_txt(layout.cell(k, "size").value) for k in range(r + 1, until)]
             m = resolve_with_items(m, [t for t in items if t], groupings)
-        if m.label is None:
-            if not isinstance(cell, MergedCell):
-                cell.fill = RED_FILL
-            report.groups_flagged.append((r, text, m.reason))
-            continue
         header_rows[r] = m.label
-        if text == m.label:
-            report.groups_unchanged.append((r, m.label))
-        else:
-            _set(cell, m.label, report)
-            report.groups_matched.append((r, text, m.label))
-            if m.reason == "matched by its items":
-                report.groups_by_items.append((r, text, m.label))
+        report.group_headers.append((r, text, m.label))
     return header_rows
+
+
+def _step2b_fix_latin(layout: Layout, report: Report, moved: set, fixer) -> None:
+    """Correct misspelled botanical names in the item names step 2 just moved into
+    Description. Only item rows are looked at (never headers), and latin.accept only lets
+    small spelling changes to Latin words through."""
+    if fixer is None:
+        report.latin_skipped = "no Claude API key is set for the tool"
+        return
+    texts = {r: _txt(layout.cell(r, "description").value) for r in sorted(moved)}
+    texts = {r: t for r, t in texts.items() if t and not _is_formula(t)}
+    try:
+        fixes = fixer(list(texts.values()))
+    except Exception as err:
+        report.latin_skipped = f"the spell check failed: {type(err).__name__}"
+        return
+    for r, before in texts.items():
+        after = fixes.get(before)
+        if after and after != before and _set(layout.cell(r, "description"), after, report):
+            report.latin_fixed.append((r, before, after))
 
 
 def _step2_size_to_description(layout: Layout, report: Report, conflicts: set) -> set:
@@ -699,8 +721,7 @@ def _step2_size_to_description(layout: Layout, report: Report, conflicts: set) -
             continue
         desc = layout.cell(r, "description")
         if r in conflicts:
-            if not isinstance(desc, MergedCell):
-                desc.fill = RED_FILL
+            _fill_red(desc, report)
             report.conflicts.append((r, _txt(desc.value), _txt(size.value)))
             continue
         if _move(size, desc, report):
@@ -752,7 +773,7 @@ def _step4_merge_size_into_description(layout: Layout, report: Report, skip: set
 
 
 def _group_for_row(row: int, header_rows: dict) -> str | None:
-    """The label of the nearest header above this row — None if that header was flagged or is
+    """The label of the nearest header above this row — None if that header names no grouping or is
     a coloured section marker (so a Soil group never leaks past an 'IRRIGATION' marker), or
     if there is no header above at all."""
     label = None
@@ -908,10 +929,17 @@ def _preflight(layout: Layout, force: bool) -> None:
     )
 
 
+_DEFAULT = object()
+
+
 def format_worksheet(wb, sheet_name: str | None = None, force: bool = False,
-                     groupings: list[Grouping] | None = None) -> Report:
-    """Run the seven steps, in order, on an open workbook. Mutates `wb`; returns the Report."""
+                     groupings: list[Grouping] | None = None, latin_fixer=_DEFAULT) -> Report:
+    """Run the steps, in order, on an open workbook. Mutates `wb` in memory and records every
+    change in `report.edits`; returns the Report. `latin_fixer` maps item texts to corrected
+    ones (default: latin.fix_latin_names when an API key is set; None skips step 2b)."""
     groupings = groupings or load_groupings()
+    if latin_fixer is _DEFAULT:
+        latin_fixer = latin.fix_latin_names if latin.available() else None
     layout = find_layout(wb, sheet_name)
     _preflight(layout, force)
 
@@ -930,9 +958,10 @@ def format_worksheet(wb, sheet_name: str | None = None, force: bool = False,
 
     conflicts = _find_conflicts(layout)
     # The order below is the specification. Do not reorder.
-    header_rows = _step1_match_groups(layout, groupings, report, skip=conflicts)
-    _step2_size_to_description(layout, report, conflicts)
-    # Header rows (matched, flagged or coloured) are done once step 1 has seen them: a stray
+    header_rows = _step1_read_groups(layout, groupings, report, skip=conflicts)
+    moved = _step2_size_to_description(layout, report, conflicts)
+    _step2b_fix_latin(layout, report, moved, latin_fixer)
+    # Header rows (with or without a grouping, or coloured) are done once step 1 has seen them: a stray
     # Notes value on one must not be glued onto the label, and the depth/package rules are
     # about items. Conflict rows stay exactly as they came.
     frozen = conflicts | set(header_rows)
@@ -949,17 +978,9 @@ def output_name_for(input_path: str | Path) -> str:
     return f"{p.stem} - formatted{p.suffix.lower()}"
 
 
-def _has_drawings(path: Path) -> bool:
-    try:
-        with zipfile.ZipFile(path) as z:
-            return any(n.startswith("xl/drawings/drawing") for n in z.namelist())
-    except Exception:
-        return False
-
-
 def format_file(input_path: str | Path, output_path: str | Path, sheet_name: str | None = None,
-                force: bool = False) -> Report:
-    """Load, format, save. The original is never written to."""
+                force: bool = False, latin_fixer=_DEFAULT) -> Report:
+    """Load, format, write a new copy. The original is never written to."""
     input_path, output_path = Path(input_path), Path(output_path)
     ext = input_path.suffix.lower()
     if ext not in SUPPORTED_EXTENSIONS:
@@ -967,15 +988,14 @@ def format_file(input_path: str | Path, output_path: str | Path, sheet_name: str
             f"I can only format .xlsx or .xlsm workbooks, and this is {ext or 'an extension-less file'!r}. "
             "If it's an old .xls, please re-save it as .xlsx and send that."
         )
-    keep_vba = ext == ".xlsm"
     try:
-        wb = openpyxl.load_workbook(input_path, keep_vba=keep_vba)
+        wb = openpyxl.load_workbook(input_path)
     except Exception as err:
         raise FormatterError(f"I couldn't open that workbook ({type(err).__name__}: {err}). Is it a valid Excel file?") from err
-    report = format_worksheet(wb, sheet_name=sheet_name, force=force)
-    if keep_vba and _has_drawings(input_path):
-        report.warnings.append(
-            "this is a macro workbook: its cells, formulas, tables, names and macros are all carried over, "
-            "but shapes or buttons drawn on the sheets are not, and Excel will recalculate when it opens.")
-    wb.save(output_path)
+    report = format_worksheet(wb, sheet_name=sheet_name, force=force, latin_fixer=latin_fixer)
+    report.original_copy_sheet = original_copy_name(report.sheet, wb.sheetnames)
+    try:
+        write_package(input_path, output_path, report.sheet, report.edits, report.original_copy_sheet)
+    except (zipfile.BadZipFile, KeyError, ValueError) as err:
+        raise FormatterError(f"I couldn't write the formatted copy ({type(err).__name__}: {err}).") from err
     return report

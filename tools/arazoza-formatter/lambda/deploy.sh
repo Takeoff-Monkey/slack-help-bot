@@ -3,7 +3,10 @@
 # Prereqs: awscli configured, docker running, sam CLI installed.
 #
 # Usage:
-#   SCRATCH_BUCKET=help-bot-code-scratchpad ./deploy.sh
+#   SCRATCH_BUCKET=help-bot-code-scratchpad ANTHROPIC_API_KEY=sk-ant-... ./deploy.sh
+#
+# ANTHROPIC_API_KEY lets Claude spell-check the botanical names (latin.py). Omit it on a
+# redeploy and SAM keeps the key the stack already has; with none at all the step is skipped.
 #
 # First run uses --guided to create the stack config; later runs reuse it.
 set -euo pipefail
@@ -16,6 +19,9 @@ STACK="${STACK:-tm-tool-arazoza-formatter}"
 sam build
 
 PARAMS="ScratchBucket=${SCRATCH_BUCKET}"
+if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+  PARAMS="${PARAMS} AnthropicApiKey=${ANTHROPIC_API_KEY}"
+fi
 
 if [ -f samconfig.toml ]; then
   sam deploy --region "${REGION}" --parameter-overrides ${PARAMS}

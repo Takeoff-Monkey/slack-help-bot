@@ -1,2 +1,4 @@
 openpyxl
+lxml
+anthropic
 boto3

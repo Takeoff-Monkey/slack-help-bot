@@ -1,11 +1,13 @@
 1. setup a DB for storing personalized user data the AI can access as needed
 2. Arazoza worksheet formatter:
-    - put the data-formatting into its own worksheet so iriginal data is preserved
-    - fix macros not working
-    - AI is being too generous w/ renaming / fixing typos
-        - especially with group names, this should stay the way it is
-        - fixing typos is primarily important w/ latin names
-    - the last column at the end called 'column1' needs to be filled w/ scraped data from the 'QTY' column on the attached schedule
+    - ~~put the data-formatting into its own worksheet within the Excel file so original data is preserved~~ → `tools/arazoza-formatter/xlsx_package.py` (2026-10-22)
+    - ~~fix macros not working~~ → `tools/arazoza-formatter/xlsx_package.py` (2026-10-22)
+        - ~~macros on the output sheet stop working for some reason~~
+        - ~~try to test this yourself; if you need a sheet with macros (i.e. you can't generate your own test) let me know and I can get you one~~
+    - ~~AI is being too generous w/ renaming / fixing typos~~ → `tools/arazoza-formatter/formatter.py` + `latin.py` (2026-10-22)
+        - ~~especially with group names, this should stay the way it is~~
+        - ~~fixing typos is primarily important w/ latin names~~
+    - **deferred for later**: the last column at the end called 'column1' needs to be filled w/ scraped data from the 'QTY' column on the attached schedule
         - when the user sends in an Arazoza job request, there should be a schedule (or schedules) along with the worksheet file you're modifying
         - these schedules will be images, the names corresponding to 
 3. ~~schedule-extractor widget is relying on schedule headers in images~~ → `tools/schedule-extractor/main2.py` (2026-10-14)
