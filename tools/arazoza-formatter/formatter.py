@@ -13,10 +13,10 @@ merge only after `Notes` has become `Size`, the depth rule only after the merge,
 Reordering them yields plausible-looking but wrong data, so `format_worksheet` is the single
 place that sequences them and nothing else calls the steps directly.
 
-  1. Read every BLACK-text `Description` cell as a group header and note which takeoff
-     grouping (takeoff-groupings.txt) it names. The header text itself is LEFT AS WRITTEN
-     (TODO #2: group names stay the way the estimator wrote them); the grouping is only used
-     by step 5 to know which items sit under a Soil or Mulch group.
+  1. Match every BLACK-text `Description` cell to a takeoff grouping (takeoff-groupings.txt)
+     and relabel it; no match or an ambiguous match -> the cell is filled red. BOLD headers
+     on a sheet that also has plain ones are breakouts ("01 - Ground Level") above the
+     groups: they are left exactly as written.
   2. Move every `Size` value into the (empty) `Description` cell on its row.
      2b. Fix misspelled botanical (Latin) names in those item names — only Latin words, only
          small spelling fixes (latin.py). Nothing else on the sheet is re-spelled.
@@ -28,7 +28,7 @@ place that sequences them and nothing else calls the steps directly.
      A Size with a gallon plant size (Gal, gallon, "45 G") and no package token -> Container.
 
 Two kinds of row are protected from the item steps: rows that held a header at step 1
-(with or without a grouping, or coloured — their label, note and cells are left as they are), and rows
+(matched, flagged, breakout or coloured — their label, note and cells are left as they are), and rows
 that had BOTH a Description and a Size to begin with (the spec says that never happens on a
 well-formed sheet; when it does, the row is red-filled and left exactly as it came).
 
@@ -202,6 +202,10 @@ def is_black_font(cell) -> bool:
     return False
 
 
+def is_bold_font(cell) -> bool:
+    return bool(cell.font is not None and cell.font.b)
+
+
 def _norm_header(value) -> str:
     return re.sub(r"\s+", " ", _txt(value).lower()).rstrip(":").strip()
 
@@ -251,7 +255,9 @@ def _token_match(a: str, b: str) -> float:
     if a == b:
         return _MATCH_EXACT
     sa, sb = _stem(a), _stem(b)
-    if sa == sb or (min(len(sa), len(sb)) >= 5 and (sa.startswith(sb) or sb.startswith(sa))):
+    short_s, long_s = sorted((sa, sb), key=len)
+    if sa == sb or (len(short_s) >= 5 and long_s.startswith(short_s) and len(long_s) - len(short_s) <= 2):
+        # a short tail only: "ground" -> "groundcov" is a compound word, not an inflection
         return _MATCH_INFLECTED          # relocation/relocate -> 'reloc'/'relocat'
     short, long_ = sorted((a, b), key=len)
     if len(short) >= 4 and short in long_:
@@ -495,8 +501,12 @@ class Report:
     sheet: str = ""
     header_row: int = 0
     columns: dict = field(default_factory=dict)          # role -> column letter
-    # step 1 (headers are read, never rewritten)
-    group_headers: list = field(default_factory=list)     # (row, text, grouping label or None)
+    # step 1
+    groups_matched: list = field(default_factory=list)    # (row, from, to)
+    groups_by_items: list = field(default_factory=list)   # (row, from, to)  subset of the above, placed by the items beneath
+    groups_unchanged: list = field(default_factory=list)  # (row, label)   already in target form
+    groups_flagged: list = field(default_factory=list)    # (row, text, reason)
+    groups_breakouts: list = field(default_factory=list)  # (row, text)    bold breakouts, left as written
     groups_skipped_colored: list = field(default_factory=list)   # (row, text)
     # step 2
     items_moved: int = 0
@@ -526,7 +536,7 @@ class Report:
 
     @property
     def flagged_count(self) -> int:
-        return len(self.conflicts)
+        return len(self.groups_flagged) + len(self.conflicts)
 
     def summary(self, input_name: str, output_name: str) -> str:
         """What the bot tells the user. Written to be relayed nearly verbatim, so it leads with
@@ -535,20 +545,35 @@ class Report:
         if self.original_copy_sheet:
             lines.append(f"The data as it arrived is kept untouched on a new sheet, '{self.original_copy_sheet}'.")
 
-        if self.conflicts:
+        if self.groups_flagged or self.conflicts:
             n = self.flagged_count
             lines.append(f"{n} cell{'s' if n != 1 else ''} filled RED for a human to check:")
+            for row, text, reason in self.groups_flagged[:20]:
+                lines.append(f"  - row {row}: '{_shorten(text)}' ({reason})")
             for row, desc, size in self.conflicts[:10]:
                 lines.append(f"  - row {row}: Description '{_shorten(desc)}' and Size '{_shorten(size)}' were BOTH "
                              f"filled, so that row was left exactly as it came")
-            if n > 10:
-                lines.append(f"  - …and {n - 10} more (see the red cells in the file)")
+            hidden = n - min(len(self.groups_flagged), 20) - min(len(self.conflicts), 10)
+            if hidden > 0:
+                lines.append(f"  - …and {hidden} more (see the red cells in the file)")
         else:
             lines.append("No cells needed flagging.")
 
-        if self.group_headers:
-            n = len(self.group_headers)
-            lines.append(f"Groups: {n} header{'s' if n != 1 else ''} left exactly as written.")
+        matched = self.groups_matched
+        if matched or self.groups_unchanged:
+            pairs = ", ".join(f"'{_shorten(a, 24)}' → '{b}'" for _, a, b in _dedupe_pairs(matched)[:12])
+            extra = f" ({len(self.groups_unchanged)} already in final form)" if self.groups_unchanged else ""
+            lines.append(f"Groups: {len(matched)} header{'s' if len(matched) != 1 else ''} relabelled{extra}"
+                         + (f": {pairs}" if pairs else "") + ".")
+            if self.groups_by_items:
+                by = ", ".join(f"'{_shorten(a, 24)}' → '{b}'" for _, a, b in self.groups_by_items[:6])
+                lines.append(f"Of those, {len(self.groups_by_items)} named more than one group (or none) and "
+                             f"{'was' if len(self.groups_by_items) == 1 else 'were'} placed by the items listed "
+                             f"under {'it' if len(self.groups_by_items) == 1 else 'them'}: {by}. Worth a glance.")
+        if self.groups_breakouts:
+            n = len(self.groups_breakouts)
+            ex = ", ".join(f"'{_shorten(t, 24)}'" for _, t in self.groups_breakouts[:4])
+            lines.append(f"Breakouts: {n} bold header{'s' if n != 1 else ''} left as written ({ex}).")
         if self.latin_fixed:
             n = len(self.latin_fixed)
             lines.append(f"Latin names: fixed the spelling on {n} item{'s' if n != 1 else ''} (nothing else was re-spelled):")
@@ -602,6 +627,16 @@ class Report:
         return "\n".join(lines)
 
 
+def _dedupe_pairs(pairs):
+    seen, out = set(), []
+    for row, a, b in pairs:
+        key = (a.strip().lower(), b)
+        if key not in seen:
+            seen.add(key)
+            out.append((row, a, b))
+    return out
+
+
 def _shorten(text, n: int = 60) -> str:
     t = _txt(text).replace("\n", " ")
     return t if len(t) <= n else t[: n - 1] + "…"
@@ -652,16 +687,20 @@ def _find_conflicts(layout: Layout) -> set:
     }
 
 
-def _step1_read_groups(layout: Layout, groupings: list[Grouping], report: Report, skip: set) -> dict:
-    """Read the black Description headers and work out which grouping each one names. The
-    cells are never written: group names stay exactly as the estimator typed them. A header
-    the text alone can't place gets a second opinion from the items beneath it
-    (resolve_with_items).
+def _step1_match_groups(layout: Layout, groupings: list[Grouping], report: Report, skip: set) -> dict:
+    """Relabel black Description headers; red-fill the unmatched/ambiguous. A header the text
+    alone can't place gets a second opinion from the items beneath it (resolve_with_items).
+
+    Bold headers on a sheet that also has plain (non-bold) black headers are breakouts —
+    "01 - Ground Level" above "01 - Palm", "02 - Tree" — and are left exactly as written.
+    When every header is bold (the Vela Cove OST export) there is no breakout level, and
+    they are all groups.
 
     Returns row -> label for EVERY row that held a header: the grouping label where one
-    matched, None where none did or it is a coloured section marker. Later steps use the keys
-    to leave header rows alone, and the depth rule uses the values to know which group — if
-    any recognised one — an item sits under."""
+    matched (or was already there), None where the header was flagged, is a breakout or is a
+    coloured section marker. Later steps use the keys to leave header rows alone, and the
+    depth rule uses the values to know which group — if any recognised one — an item sits
+    under."""
     header_rows: dict = {}
     # A row already holding text in Description is a group header — unless it also carries a
     # quantity, which no header on these sheets ever does. That one is an item somebody typed
@@ -672,6 +711,9 @@ def _step1_read_groups(layout: Layout, groupings: list[Grouping], report: Report
         if r not in skip and not _empty(layout.cell(r, "description").value)
         and (qty_col is None or _empty(layout.cell(r, "qty").value))
     ]
+    black = [r for r in candidates if is_black_font(layout.cell(r, "description"))]
+    has_breakouts = (any(is_bold_font(layout.cell(r, "description")) for r in black)
+                     and any(not is_bold_font(layout.cell(r, "description")) for r in black))
     for i, r in enumerate(candidates):
         cell = layout.cell(r, "description")
         text = _txt(cell.value)
@@ -679,14 +721,27 @@ def _step1_read_groups(layout: Layout, groupings: list[Grouping], report: Report
         if not is_black_font(cell):
             report.groups_skipped_colored.append((r, text))
             continue
+        if has_breakouts and is_bold_font(cell):
+            report.groups_breakouts.append((r, text))
+            continue
         m = match_grouping(text, groupings)
         if m.label is None:
             # The items under this header (still sitting in Size at this point) get a say.
             until = candidates[i + 1] if i + 1 < len(candidates) else layout.last_row + 1
             items = [_txt(layout.cell(k, "size").value) for k in range(r + 1, until)]
             m = resolve_with_items(m, [t for t in items if t], groupings)
+        if m.label is None:
+            _fill_red(cell, report)
+            report.groups_flagged.append((r, text, m.reason))
+            continue
         header_rows[r] = m.label
-        report.group_headers.append((r, text, m.label))
+        if text == m.label:
+            report.groups_unchanged.append((r, m.label))
+        else:
+            _set(cell, m.label, report)
+            report.groups_matched.append((r, text, m.label))
+            if m.reason == "matched by its items":
+                report.groups_by_items.append((r, text, m.label))
     return header_rows
 
 
@@ -773,7 +828,7 @@ def _step4_merge_size_into_description(layout: Layout, report: Report, skip: set
 
 
 def _group_for_row(row: int, header_rows: dict) -> str | None:
-    """The label of the nearest header above this row — None if that header names no grouping or is
+    """The label of the nearest header above this row — None if that header was flagged, is a breakout or is
     a coloured section marker (so a Soil group never leaks past an 'IRRIGATION' marker), or
     if there is no header above at all."""
     label = None
@@ -958,10 +1013,10 @@ def format_worksheet(wb, sheet_name: str | None = None, force: bool = False,
 
     conflicts = _find_conflicts(layout)
     # The order below is the specification. Do not reorder.
-    header_rows = _step1_read_groups(layout, groupings, report, skip=conflicts)
+    header_rows = _step1_match_groups(layout, groupings, report, skip=conflicts)
     moved = _step2_size_to_description(layout, report, conflicts)
     _step2b_fix_latin(layout, report, moved, latin_fixer)
-    # Header rows (with or without a grouping, or coloured) are done once step 1 has seen them: a stray
+    # Header rows (matched, flagged, breakout or coloured) are done once step 1 has seen them: a stray
     # Notes value on one must not be glued onto the label, and the depth/package rules are
     # about items. Conflict rows stay exactly as they came.
     frozen = conflicts | set(header_rows)

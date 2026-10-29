@@ -16,8 +16,8 @@ run standalone from the terminal.
 
 Arazoza's worksheets arrive *almost* in our layout, shifted one column right: the item name
 sits in **Size**, the sizing sits in **Notes**, **Package** is empty, and the group headers in
-**Description** carry Arazoza's own names ("Trees", "Palms", "Bed Prep"), which stay as they
-are. Putting that right by hand is a dozen careful copy/paste passes per sheet, and the passes
+**Description** carry Arazoza's own names ("Trees", "Palms", "Bed Prep") rather than our numbered
+takeoff groupings. Putting that right by hand is a dozen careful copy/paste passes per sheet, and the passes
 have to happen in one particular order or the data comes out mangled.
 
 ## What it does — in this order, always
@@ -28,7 +28,7 @@ individually.
 
 | # | Step | Detail |
 |---|------|--------|
-| 1 | **Read group headers** | Every **black-text** cell in `Description` is a group header. Its text is **left exactly as written** (TODO #2: the old relabelling to `1 - Trees & Palms` etc. was too generous). The tool still works out which takeoff grouping in [`takeoff-groupings.txt`](takeoff-groupings.txt) each header names, but only so step 5 knows which items sit under a Soil or Mulch group. Cells in any other colour (the red `Landscape` / `IRRIGATION` section markers) are skipped. See *How headers are read* below. |
+| 1 | **Match group headers** | Every **black-text** cell in `Description` is a group header, relabelled to the takeoff grouping it names in [`takeoff-groupings.txt`](takeoff-groupings.txt) (`01 - Palm` → `1 - Trees & Palms`). No match, or more than one, → the cell is filled **red** and its text kept. **Bold** headers on a sheet that also has plain ones are *breakouts* (a building level such as `01 - Ground Level` above `01 - Palm`, `02 - Tree`) and are left exactly as written. When every header is bold, as in the Vela Cove OST export, there's no breakout level and they're all groups. Cells in any other colour (the red `Landscape` / `IRRIGATION` section markers) are skipped. See *How headers are read* below. |
 | 2 | **Size → Description** | Every row with a value in `Size` has it moved into `Description`. Existing `Description` values stay (they are always on other rows); a row that has *both* is flagged red and left exactly as it came. |
 | 2b | **Latin names** | The item names just moved get a spell check on their **botanical (Latin) words only**, by Claude Haiku 5.5 ([`latin.py`](latin.py)). Every proposed fix is then checked locally and dropped unless it keeps the word count, changes at most two words, each changed word is alphabetic, 4+ letters and a near spelling of the original, and nothing inside quotes (cultivars) changes. The estimator's capitalisation is kept. Group headers, common names, sizes and abbreviations are never re-spelled. Every fix is listed in the summary (`row 19: 'Quercus virginana' → 'Quercus virginiana'`). With no `ANTHROPIC_API_KEY`, or if the call fails, nothing changes and the summary says the check was skipped. |
 | 3 | **Notes → Size** | `Notes` holds the sizing; it moves into the now-empty `Size` on item rows. A note sitting on a header row stays in `Notes`. |
@@ -48,10 +48,10 @@ as items (steps 4 to 7 apply to them).
 
 ### How headers are read
 
-Headers are never rewritten. This matching only tells step 5 which group an item sits under.
 A header's words are compared with each grouping's words. A grouping is a *candidate* only if
 at least one header word **is** one of its words — exactly (`Trees`/`tree`) or by stem
-(`Mulching`/`mulch`, `Protection`/`protect`). Mere resemblances (`Streetscape`~tree,
+(`Mulching`/`mulch`, `Protection`/`protect`; a stem is at most two letters short, so
+`Ground` is not a stem of *groundcover*). Mere resemblances (`Streetscape`~tree,
 `Project`~protect, `Palmetto`~palm) never qualify on their own, so they can't quietly put a header
 in the wrong group. A small alias list in `formatter.ALIASES` translates
 estimator vocabulary to grouping words (`Ground Cover` → groundcover, `Hydroseed` → seed,
@@ -69,7 +69,7 @@ header (or one that matched nothing) the **items listed under it** get a say: ea
 matched like a header and votes for the grouping it names. An ambiguous header goes to the
 one candidate its items back (`07 - Seed & Sod` over three sod rows → Sod); an unknown header
 gets a grouping only when at least two items vote, they all agree, and they are at least half
-of its items. A header with no grouping simply isn't a Soil/Mulch context for step 5.
+of its items. A header that still has no grouping is filled red, and isn't a Soil/Mulch context for step 5.
 
 ### The output file
 
@@ -220,8 +220,7 @@ Two real-file checks run when the files are on the machine:
   for in `tests/samples/` and then the repo's `docs/`. Three differences are expected and pinned
   by the test because the spec doesn't cover them: the human's `-`/`Container` placeholders in
   Package, `LF` → `Unit` on the shrub rows, and two descriptions with hand-typed additions.
-  (The human also relabelled the group headers; the tool now keeps them, so headers are
-  compared with the input instead.) It also checks that every package part except the five
+  It also checks that every package part except the five
   the writer is meant to touch comes out byte-identical, ribbon and VBA included.
 - **Round trip** — if `../../../Sample_test_sheets/` is present, the four finished landscape
   Arazoza `.xlsm` files from 2022–23 are reversed into the raw layout, run through the tool, and
