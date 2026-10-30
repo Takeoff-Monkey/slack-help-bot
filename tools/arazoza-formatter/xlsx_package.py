@@ -70,6 +70,7 @@ class EditLog:
 
     def __init__(self):
         self.cells: dict[str, CellEdit] = {}
+        self.table_growth = 0       # rows to add to the sheet's Excel table (step 0 inserted them)
 
     def _get(self, coord: str) -> CellEdit:
         return self.cells.setdefault(coord, CellEdit())
@@ -110,6 +111,14 @@ def _split_coord(coord: str) -> tuple[int, int]:
     for ch in m.group(1):
         col = col * 26 + (ord(ch) - 64)
     return int(m.group(2)), col
+
+
+def _col_letters(col: int) -> str:
+    letters = ""
+    while col:
+        col, rem = divmod(col - 1, 26)
+        letters = chr(65 + rem) + letters
+    return letters
 
 
 def _resolve_target(base_part: str, target: str) -> str:
@@ -294,6 +303,59 @@ class _Sheet:
         return _dump(self.root)
 
 
+def _grow_table(parts: dict, sheet_part: str, sheet: _Sheet, added: int) -> None:
+    """Stretch the sheet's Excel table `added` rows further down, onto the rows step 0's
+    inserted headers pushed the data into. The new rows take the old last row's styles, and
+    its formula columns' formulas: they are [#This Row] structured references, the same on
+    every row, so they copy unchanged (fullCalcOnLoad recalculates them)."""
+    rels_part = _rels_name(sheet_part)
+    if rels_part not in parts:
+        return
+    for rel in _parse(parts[rels_part]):
+        if not rel.get("Type", "").endswith("/table"):
+            continue
+        table_part = _resolve_target(sheet_part, rel.get("Target"))
+        table = _parse(parts[table_part])
+        m = re.fullmatch(r"([A-Z]+)(\d+):([A-Z]+)(\d+)", table.get("ref", ""))
+        if not m:
+            continue
+        first_col, last_col, end = m.group(1), m.group(3), int(m.group(4))
+        new_ref = f"{first_col}{m.group(2)}:{last_col}{end + added}"
+        table.set("ref", new_ref)
+        auto = table.find(_m("autoFilter"))
+        if auto is not None:
+            auto.set("ref", new_ref)
+        parts[table_part] = _dump(table)
+
+        c0, c1 = _split_coord(f"{first_col}1")[1], _split_coord(f"{last_col}1")[1]
+        shared: dict = {}       # shared-formula index -> its text, from the cell that defines it
+        for coord, c in sheet.cells.items():
+            f = c.find(_m("f"))
+            if f is not None and f.get("t") == "shared" and f.text:
+                shared[f.get("si")] = f.text
+        for col in range(c0, c1 + 1):
+            letters = _col_letters(col)
+            src = sheet.cells.get(f"{letters}{end}")
+            if src is None:
+                continue
+            f = src.find(_m("f"))
+            text = None if f is None else (f.text or shared.get(f.get("si")))
+            for row in range(end + 1, end + added + 1):
+                c = sheet.cell(f"{letters}{row}")
+                if src.get("s"):
+                    c.set("s", src.get("s"))
+                    sheet.original_style[c.get("r")] = int(src.get("s"))
+                if text:
+                    _clear_value(c)
+                    new_f = etree.SubElement(c, _m("f"))
+                    new_f.text = text
+        dim = sheet.root.find(_m("dimension"))
+        if dim is not None:
+            dm = re.fullmatch(r"([A-Z]+\d+):([A-Z]+)(\d+)", dim.get("ref", ""))
+            if dm and int(dm.group(3)) < end + added:
+                dim.set("ref", f"{dm.group(1)}:{dm.group(2)}{end + added}")
+
+
 def _apply_edits(sheet: _Sheet, styles: _Styles, edits: EditLog) -> None:
     for coord, edit in edits.cells.items():
         c = sheet.cell(coord)
@@ -410,6 +472,8 @@ def write_package(src, dst, sheet_title: str, edits: EditLog, copy_title: str | 
                         if r.get("Type", "").endswith("/styles")), "xl/styles.xml")
     styles = _Styles(parts[styles_part])
     sheet = _Sheet(original_sheet_xml)
+    if edits.table_growth:
+        _grow_table(parts, sheet_part, sheet, edits.table_growth)
     _apply_edits(sheet, styles, edits)
     parts[sheet_part] = sheet.to_bytes()
     parts[styles_part] = styles.to_bytes()

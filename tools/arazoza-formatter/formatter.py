@@ -13,6 +13,10 @@ merge only after `Notes` has become `Size`, the depth rule only after the merge,
 Reordering them yields plausible-looking but wrong data, so `format_worksheet` is the single
 place that sequences them and nothing else calls the steps directly.
 
+  0. Only when the workbook has a FOLDER BREAKOUT tab (the client broke the takeoff out by
+     zone and the group headers are missing): put each folder's groups back in as header rows
+     above their items, section by section (see _step0_folder_breakout). The zone section rows
+     become breakouts for step 1.
   1. Match every BLACK-text `Description` cell to a takeoff grouping (takeoff-groupings.txt)
      and relabel it; no match or an ambiguous match -> the cell is filled red. BOLD headers
      on a sheet that also has plain ones are breakouts ("01 - Ground Level") above the
@@ -501,6 +505,10 @@ class Report:
     sheet: str = ""
     header_row: int = 0
     columns: dict = field(default_factory=dict)          # role -> column letter
+    # step 0 (only with a FOLDER BREAKOUT tab)
+    folder_breakout: bool = False
+    folder_inserted: list = field(default_factory=list)   # (row, group, section)
+    folder_unmatched: list = field(default_factory=list)  # folder names with no section on the sheet
     # step 1
     groups_matched: list = field(default_factory=list)    # (row, from, to)
     groups_by_items: list = field(default_factory=list)   # (row, from, to)  subset of the above, placed by the items beneath
@@ -558,6 +566,16 @@ class Report:
                 lines.append(f"  - …and {hidden} more (see the red cells in the file)")
         else:
             lines.append("No cells needed flagging.")
+
+        if self.folder_breakout:
+            n = len(self.folder_inserted)
+            sections = len({sec for _, _, sec in self.folder_inserted})
+            lines.append(f"Folder breakout: added {n} group header{'s' if n != 1 else ''} from the FOLDER BREAKOUT tab "
+                         f"across {sections} zone section{'s' if sections != 1 else ''} (new rows, before relabelling).")
+            if self.folder_unmatched:
+                lines.append("  No section on the sheet matched folder"
+                             f"{'s' if len(self.folder_unmatched) != 1 else ''}: "
+                             + ", ".join(f"'{_shorten(f, 30)}'" for f in self.folder_unmatched[:8]) + ".")
 
         matched = self.groups_matched
         if matched or self.groups_unchanged:
@@ -687,14 +705,169 @@ def _find_conflicts(layout: Layout) -> set:
     }
 
 
-def _step1_match_groups(layout: Layout, groupings: list[Grouping], report: Report, skip: set) -> dict:
+FOLDER_BREAKOUT_SHEET = "FOLDER BREAKOUT"
+
+
+@dataclass
+class _FolderGroup:
+    name: str
+    items: list                # item texts, in the tab's order
+    info: bool                 # a "00 - ..." group: human notes, never written as a header
+
+
+@dataclass
+class _Folder:
+    name: str
+    groups: list
+
+
+def _folder_breakout_sheet(wb):
+    for ws in wb.worksheets:
+        if ws.title.strip().upper() == FOLDER_BREAKOUT_SHEET:
+            return ws
+    return None
+
+
+def _norm_item(text) -> str:
+    return re.sub(r"\s+", " ", _txt(text)).strip().lower()
+
+
+def _norm_zone(text) -> str:
+    """'01 - Level 1' and 'Level 1 - Tower 2' both start with 'level 1' once the code is gone."""
+    t = re.sub(r"^\s*\d+\s*[-.:)]\s*", "", _txt(text))
+    return re.sub(r"\s+", " ", t).strip().lower()
+
+
+def read_folder_breakout(ws) -> list[_Folder]:
+    """The FOLDER BREAKOUT tab: a bold name in the first column is a folder ('01 - Level 1'),
+    a plain one is a group within it ('01 - Trees'; '00 - ...' is human info), and the
+    second column lists each group's items."""
+    first = ws.min_column
+    folders: list[_Folder] = []
+    group = None
+    for r in range(ws.min_row, ws.max_row + 1):
+        name_cell, item_cell = ws.cell(r, first), ws.cell(r, first + 1)
+        name = _txt(name_cell.value)
+        if name:
+            if name_cell.font is not None and name_cell.font.b:
+                folders.append(_Folder(name, []))
+                group = None
+            elif folders:
+                group = _FolderGroup(name, [], bool(re.match(r"^\s*0+\s*[-.:)]", name)))
+                folders[-1].groups.append(group)
+        elif group is not None and not _empty(item_cell.value):
+            group.items.append(_norm_item(item_cell.value))
+    return folders
+
+
+def _data_columns(layout: Layout) -> list[int]:
+    """The columns a row insertion moves: the header row's columns from Description rightwards
+    that hold plain data, stopping at the table's formula columns (those stay put and are
+    extended onto the new rows by the writer)."""
+    ws, desc = layout.ws, layout.col("description")
+    last = max(layout.cols.values())
+    c = desc
+    while _txt(ws.cell(layout.header_row, c + 1).value):
+        if any(_is_formula(ws.cell(r, c + 1).value) for r in layout.rows()):
+            break
+        c += 1
+    return list(range(desc, max(c, last) + 1))
+
+
+def _step0_folder_breakout(layout: Layout, folders: list[_Folder], report: Report, skip: set) -> set:
+    """Put the group headers a zone breakout dropped back in, from the FOLDER BREAKOUT tab.
+
+    The sheet's sections are its Description rows with no quantity ('Level 1 - Tower 1').
+    Each folder ('01 - Level 1') owns the sections whose name starts with the folder's name
+    ('Level 1 - Tower 1', 'Level 1 - Tower 2'). In each such section, walking the folder's
+    groups in order: a group ends at the last row matching its last item; if that item isn't
+    in the section, its next-to-last, and so on up the list. The row after that end is where
+    the NEXT group present in the section starts, so its header goes there; the first group's
+    header goes right below the section name. A '00 - ...' group moves the boundary along but
+    never gets a header. Matching only looks below the previous group's end, so an item listed
+    in two groups can't pull a boundary backwards.
+
+    Rows are inserted by rewriting the data columns downward (the edit log carries cell values,
+    not row insertions); the writer then extends the Excel table over the added rows. Returns
+    the section rows (in their new positions), which step 1 leaves as written."""
+    rows = list(layout.rows())
+    qty_col = layout.col("qty")
+    sections = [r for r in rows
+                if r not in skip and not _empty(layout.cell(r, "description").value)
+                and (qty_col is None or _empty(layout.cell(r, "qty").value))]
+    bounds = {s: (sections[i + 1] - 1 if i + 1 < len(sections) else layout.last_row)
+              for i, s in enumerate(sections)}
+    items = {r: _norm_item(layout.cell(r, "size").value) for r in rows}
+
+    inserts: dict = {}         # existing row -> (group, section) headers to insert above it
+    for folder in folders:
+        key = _norm_zone(folder.name)
+        own = [s for s in sections if key and re.match(re.escape(key) + r"(?![a-z0-9])",
+                                                        _norm_zone(layout.cell(s, "description").value))]
+        if not own and any(not g.info for g in folder.groups):
+            report.folder_unmatched.append(folder.name)
+        for s in own:
+            section_name = _txt(layout.cell(s, "description").value)
+            prev_end = s
+            for g in folder.groups:
+                end = None
+                for item in reversed(g.items):
+                    hits = [r for r in range(prev_end + 1, bounds[s] + 1) if items[r] == item]
+                    if hits:
+                        end = hits[-1]
+                        break
+                if end is None:
+                    continue
+                if not g.info:
+                    inserts.setdefault(prev_end + 1, []).append((g.name, section_name, s))
+                prev_end = end
+    if not inserts:
+        return set(sections)
+
+    # Lay the rows back down with the headers in between. Bottom-up, so every row is read
+    # (and its font handed on in the edit log) before anything is written over it.
+    ws, cols = layout.ws, _data_columns(layout)
+    desc = layout.col("description")
+    order: list = []           # (source row, None) for a kept row; (section row, (group, section)) for a header
+    new_of: dict = {}
+    for r in rows:
+        for group, section_name, s in inserts.get(r, []):
+            order.append((s, (group, section_name)))
+        new_of[r] = layout.first_row + len(order)
+        order.append((r, None))
+    for i in reversed(range(len(order))):
+        src, header = order[i]
+        dst = layout.first_row + i
+        if header is None and src == dst:
+            continue
+        for c in cols:
+            cell, from_cell = ws.cell(dst, c), ws.cell(src, c)
+            value = (header[0] if c == desc else None) if header else from_cell.value
+            _set(cell, value, report)
+            cell.font = copy(from_cell.font)          # a header wears its section's plain font
+            report.edits.copy_font(cell.coordinate, from_cell.coordinate)
+        if header:
+            report.folder_inserted.append((dst, header[0], header[1]))
+    report.folder_inserted.reverse()
+    added = len(order) - len(rows)
+    layout.last_row += added
+    if layout.table_end is not None:
+        layout.table_end += added
+        report.edits.table_growth = added
+    layout.beyond_table = tuple(new_of[r] for r in layout.beyond_table)
+    return {new_of[s] for s in sections}
+
+
+def _step1_match_groups(layout: Layout, groupings: list[Grouping], report: Report, skip: set,
+                        breakouts: set = frozenset()) -> dict:
     """Relabel black Description headers; red-fill the unmatched/ambiguous. A header the text
     alone can't place gets a second opinion from the items beneath it (resolve_with_items).
 
     Bold headers on a sheet that also has plain (non-bold) black headers are breakouts —
     "01 - Ground Level" above "01 - Palm", "02 - Tree" — and are left exactly as written.
     When every header is bold (the Vela Cove OST export) there is no breakout level, and
-    they are all groups.
+    they are all groups. `breakouts` names more rows to leave as written (step 0's zone
+    sections).
 
     Returns row -> label for EVERY row that held a header: the grouping label where one
     matched (or was already there), None where the header was flagged, is a breakout or is a
@@ -721,7 +894,7 @@ def _step1_match_groups(layout: Layout, groupings: list[Grouping], report: Repor
         if not is_black_font(cell):
             report.groups_skipped_colored.append((r, text))
             continue
-        if has_breakouts and is_bold_font(cell):
+        if r in breakouts or (has_breakouts and is_bold_font(cell)):
             report.groups_breakouts.append((r, text))
             continue
         m = match_grouping(text, groupings)
@@ -1003,6 +1176,13 @@ def format_worksheet(wb, sheet_name: str | None = None, force: bool = False,
         header_row=layout.header_row,
         columns={role: layout.ws.cell(layout.header_row, c).column_letter for role, c in layout.cols.items()},
     )
+    # The order below is the specification. Do not reorder.
+    breakouts: set = set()
+    folder_ws = _folder_breakout_sheet(wb)
+    if folder_ws is not None and folder_ws is not layout.ws:
+        report.folder_breakout = True
+        breakouts = _step0_folder_breakout(layout, read_folder_breakout(folder_ws), report,
+                                           skip=_find_conflicts(layout))
     if layout.beyond_table:
         rows = layout.beyond_table
         span = f"row {rows[0]}" if len(rows) == 1 else f"rows {rows[0]}–{rows[-1]}"
@@ -1012,8 +1192,7 @@ def format_worksheet(wb, sheet_name: str | None = None, force: bool = False,
             f"the table is extended in Excel.")
 
     conflicts = _find_conflicts(layout)
-    # The order below is the specification. Do not reorder.
-    header_rows = _step1_match_groups(layout, groupings, report, skip=conflicts)
+    header_rows = _step1_match_groups(layout, groupings, report, skip=conflicts, breakouts=breakouts)
     moved = _step2_size_to_description(layout, report, conflicts)
     _step2b_fix_latin(layout, report, moved, latin_fixer)
     # Header rows (matched, flagged, breakout or coloured) are done once step 1 has seen them: a stray

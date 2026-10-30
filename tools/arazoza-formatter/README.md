@@ -28,6 +28,7 @@ individually.
 
 | # | Step | Detail |
 |---|------|--------|
+| 0 | **Folder breakout** *(only when the file has a `FOLDER BREAKOUT` tab)* | The client broke the takeoff out by zone, so the sheet has zone sections (`Level 1 - Tower 1`) but no group headers. The headers are put back from the `FOLDER BREAKOUT` tab. See *Folder breakouts* below. |
 | 1 | **Match group headers** | Every **black-text** cell in `Description` is a group header, relabelled to the takeoff grouping it names in [`takeoff-groupings.txt`](takeoff-groupings.txt) (`01 - Palm` → `1 - Trees & Palms`). No match, or more than one, → the cell is filled **red** and its text kept. **Bold** headers on a sheet that also has plain ones are *breakouts* (a building level such as `01 - Ground Level` above `01 - Palm`, `02 - Tree`) and are left exactly as written. When every header is bold, as in the Vela Cove OST export, there's no breakout level and they're all groups. Cells in any other colour (the red `Landscape` / `IRRIGATION` section markers) are skipped. See *How headers are read* below. |
 | 2 | **Size → Description** | Every row with a value in `Size` has it moved into `Description`. Existing `Description` values stay (they are always on other rows); a row that has *both* is flagged red and left exactly as it came. |
 | 2b | **Latin names** | The item names just moved get a spell check on their **botanical (Latin) words only**, by Claude Haiku 5.5 ([`latin.py`](latin.py)). Every proposed fix is then checked locally and dropped unless it keeps the word count, changes at most two words, each changed word is alphabetic, 4+ letters and a near spelling of the original, and nothing inside quotes (cultivars) changes. The estimator's capitalisation is kept. Group headers, common names, sizes and abbreviations are never re-spelled. Every fix is listed in the summary (`row 19: 'Quercus virginana' → 'Quercus virginiana'`). With no `ANTHROPIC_API_KEY`, or if the call fails, nothing changes and the summary says the check was skipped. |
@@ -45,6 +46,33 @@ A row with text in `Description` is treated as a group header **unless it also c
 quantity** — no header on these sheets ever does, and an item somebody had already typed into
 the right column would otherwise be overwritten with a grouping label. Such rows are handled
 as items (steps 4 to 7 apply to them).
+
+### Folder breakouts
+
+When the workbook has a tab named `FOLDER BREAKOUT`, step 0 runs first. On that tab, a **bold**
+name in column A is a folder (`01 - Level 1`), a plain one is a group in it (`01 - Trees`), and
+column B lists each group's items. A `00 - …` group (`00 - Question & Scale Check`) is human
+info, not a real group.
+
+On the worksheet, every Description row with no quantity is a zone section. A folder owns the
+sections whose name starts with the folder's name once its number is dropped: `01 - Level 1`
+owns `Level 1 - Tower 1` and `Level 1 - Tower 2`, not `Level 10 - Roof`. In each of them, the
+folder's groups are walked in order:
+
+- A group ends at the row of its **last** item; if that item isn't in the section, its
+  next-to-last, and so on up the list (in the Mandarin job, `01 - Trees` ends at *Glory Bush*
+  in Tower 2 but at *Pandanus* in Tower 1, where Glory Bush and Mahogany don't appear).
+- The row after that end is where the **next** group in the section starts, and its header is
+  inserted there. The first group's header goes right under the section name.
+- A `00` group moves the boundary along but never gets a header, so its rows (the scale-check
+  circles) stay above the first group.
+- A group with none of its items in the section gets no header.
+
+The headers are inserted as new rows. The Excel table is extended over the added rows, and its
+formula columns are copied onto them, so the import formulas still cover every row. The zone
+section rows are breakouts: step 1 leaves them as written and relabels the inserted headers
+like any other (`01 - Trees` → `1 - Trees & Palms`). A folder that names no section on the
+sheet is reported in the summary.
 
 ### How headers are read
 
@@ -213,7 +241,7 @@ tested with a stand-in.
 `tests/make_fixture.py` builds a synthetic raw worksheet covering every rule and edge case
 (also handy to *see* what the tool expects: `.venv/bin/python tests/make_fixture.py /tmp/raw.xlsx`).
 
-Two real-file checks run when the files are on the machine:
+Three real-file checks run when the files are on the machine:
 - **Golden test** — `Vela Cove OST Output.xlsm` (a worksheet straight out of OST) formatted by
   the tool must match `Arazoza - Vela Cove - Worksheet 2026-09-01.xlsm` (the same worksheet
   finished by hand): every header, description, size, depth row and UOM. The files are looked
@@ -222,6 +250,13 @@ Two real-file checks run when the files are on the machine:
   Package, `LF` → `Unit` on the shrub rows, and two descriptions with hand-typed additions.
   It also checks that every package part except the five
   the writer is meant to touch comes out byte-identical, ribbon and VBA included.
+- **Folder-breakout golden test** — `Arazoza - Residences at Mandarin - One-two Island Drive
+  (Rev. 2-B) - Worksheet 2026-10-08.xlsm` keeps the raw zone rows on a `ZONE BREAKOUT` tab and a
+  hand-finished `Project Totals`. The test copies the raw rows onto Project Totals (as a client
+  would send it), formats it, and checks that every item the human kept sits in the same zone
+  section under the same group header (40 headers in 8 sections). The human also deleted the
+  `00` scale-check rows, the empty zone rows and four zero-quantity `(unassigned)` rows. The
+  spec doesn't do that, so those rows are left out of the comparison.
 - **Round trip** — if `../../../Sample_test_sheets/` is present, the four finished landscape
   Arazoza `.xlsm` files from 2022–23 are reversed into the raw layout, run through the tool, and
   compared with what the human produced, macro workbook intact.

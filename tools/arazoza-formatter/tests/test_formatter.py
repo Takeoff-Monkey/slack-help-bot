@@ -920,6 +920,166 @@ class LambdaHandlerTests(unittest.TestCase):
             self.assertEqual(res["status"], "error")
 
 
+class FolderBreakoutTests(unittest.TestCase):
+    """Step 0: a zone breakout with no group headers, plus a FOLDER BREAKOUT tab saying which
+    items belong to which group. The example the user walked through (2026-10-29): in
+    'Level 1 - Tower 1' the group '01 - Trees' ends at Pandanus (Glory Bush and Mahogany aren't
+    there); in 'Level 1 - Tower 2' it ends at Glory Bush."""
+
+    @classmethod
+    def setUpClass(cls):
+        from openpyxl.styles import Font
+        from openpyxl.worksheet.table import Table
+        cls.tmp = tempfile.TemporaryDirectory()
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Project Totals"
+        for i, h in enumerate(make_fixture.HEADERS + ["Extract Row"]):
+            ws.cell(15, 2 + i, h).font = Font(bold=True)
+        ws["B16"], ws["B16"].font = "Landscape", Font(bold=True, color="FFFF0000")
+        rows = [
+            ("Level 1 - Tower 1", None, None, None),
+            (None, "Casasia clusifolia/Seven Year Apple", "25 Gal", 6),
+            (None, "Pandanus utilis/Screwpine", '6" DBH, FG', 3),
+            (None, "Sabal palmetto/Sabal Palm", "14' Ht., FG", 11),
+            (None, "Borrichia frutescens/Sea Oxeye Daisy", "3 Gal", 113),
+            ("Level 1 - Tower 2", None, None, None),
+            (None, "8' Circle", None, 4),                       # '00' human info: stays above the first group
+            (None, "Pandanus utilis/Screwpine", '6" DBH, FG', 1),
+            (None, "Tibouchina urvilleana/Glory Bush", "15 Gal", 2),
+            (None, "Borrichia frutescens/Sea Oxeye Daisy", "3 Gal", 20),
+            ("Level 10 - Roof", None, None, None),              # not 'Level 1'
+            (None, "Sabal palmetto/Sabal Palm", "14' Ht., FG", 1),
+        ]
+        for i, (desc, size, notes, qty) in enumerate(rows):
+            r = 17 + i
+            ws.cell(r, 2, desc); ws.cell(r, 3, size); ws.cell(r, 5, notes); ws.cell(r, 6, qty)
+            ws.cell(r, 7, "EA" if qty else None)
+            ws.cell(r, 11, f'=IF(F{r}="",FALSE(),TRUE())')
+        cls.last = 17 + len(rows) - 1
+        ws.add_table(Table(displayName="LH_materials_list_tbl", ref=f"B15:K{cls.last}"))
+        fb = wb.create_sheet("FOLDER BREAKOUT")
+        tab = [("01 - Level 1", None, True), ("00 - Question & Scale Check", None, False), (None, "8' Circle", False),
+               ("01 - Trees", None, False), (None, "Casasia clusifolia/Seven Year Apple", False),
+               (None, "Pandanus utilis/Screwpine", False), (None, "Swietenia mahogani/Mahogany", False),
+               (None, "Tibouchina urvilleana/Glory Bush", False),
+               ("02 - Palms", None, False), (None, "Sabal palmetto/Sabal Palm", False),
+               ("03 - Shrubs", None, False), (None, "Borrichia frutescens/Sea Oxeye Daisy", False),
+               ("02 - Level 7", None, True), ("01 - Trees", None, False), (None, "Bursera simaruba/Gumbo Limbo", False)]
+        for r, (a, b, bold) in enumerate(tab, start=1):
+            fb.cell(r, 1, a).font = Font(bold=bold)
+            fb.cell(r, 2, b)
+        raw = Path(cls.tmp.name) / "zones.xlsx"
+        wb.save(raw)
+        cls.report = formatter.format_file(raw, Path(cls.tmp.name) / "out.xlsx", latin_fixer=None)
+        cls.wb = openpyxl.load_workbook(Path(cls.tmp.name) / "out.xlsx")
+        cls.ws = cls.wb["Project Totals"]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def col_b(self):
+        return [self.ws.cell(r, 2).value for r in range(17, self.last + 1 + len(self.report.folder_inserted))]
+
+    def test_each_group_header_lands_above_its_items_and_is_then_relabelled(self):
+        b = [(v or "").split(" - ")[0] if v and "/" in v else v for v in self.col_b()]
+        self.assertEqual(b, [
+            "Level 1 - Tower 1",
+            "1 - Trees & Palms", "Casasia clusifolia/Seven Year Apple", "Pandanus utilis/Screwpine",
+            "1 - Trees & Palms", "Sabal palmetto/Sabal Palm",
+            "2 - Shrubs", "Borrichia frutescens/Sea Oxeye Daisy",
+            "Level 1 - Tower 2", "8' Circle",
+            "1 - Trees & Palms", "Pandanus utilis/Screwpine", "Tibouchina urvilleana/Glory Bush",
+            "2 - Shrubs", "Borrichia frutescens/Sea Oxeye Daisy",
+            "Level 10 - Roof", "Sabal palmetto/Sabal Palm",
+        ])
+        self.assertEqual([(g, sec) for _, g, sec in self.report.folder_inserted], [
+            ("01 - Trees", "Level 1 - Tower 1"), ("02 - Palms", "Level 1 - Tower 1"), ("03 - Shrubs", "Level 1 - Tower 1"),
+            ("01 - Trees", "Level 1 - Tower 2"), ("03 - Shrubs", "Level 1 - Tower 2")])
+
+    def test_zone_sections_are_breakouts_and_a_folder_with_no_section_is_reported(self):
+        self.assertEqual([t for _, t in self.report.groups_breakouts],
+                         ["Level 1 - Tower 1", "Level 1 - Tower 2", "Level 10 - Roof"])
+        self.assertEqual(self.report.groups_flagged, [])
+        self.assertEqual(self.report.folder_unmatched, ["02 - Level 7"])
+        self.assertIn("Folder breakout: added 5 group headers", self.report.summary("a", "b"))
+
+    def test_the_table_and_its_formula_column_grow_over_the_added_rows(self):
+        end = self.last + 5
+        self.assertEqual(self.ws.tables["LH_materials_list_tbl"].ref, f"B15:K{end}")
+        for r in range(self.last + 1, end + 1):
+            self.assertTrue(str(self.ws.cell(r, 11).value).startswith("=IF("), r)
+        # the data moved, the formula column stayed where it was
+        self.assertEqual(self.ws.cell(17, 11).value, '=IF(F17="",FALSE(),TRUE())')
+
+    def test_without_a_folder_breakout_tab_nothing_is_inserted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            raw = make_fixture.build_synthetic_raw(Path(tmp) / "raw.xlsx")
+            report = formatter.format_file(raw, Path(tmp) / "out.xlsx", latin_fixer=None)
+        self.assertFalse(report.folder_breakout)
+        self.assertEqual(report.folder_inserted, [])
+        self.assertNotIn("Folder breakout", report.summary("a", "b"))
+
+
+MANDARIN = next((d / "Arazoza - Residences at Mandarin - One-two Island Drive (Rev. 2-B) - Worksheet 2026-10-08.xlsm"
+                 for d in _VELA_DIRS
+                 if (d / "Arazoza - Residences at Mandarin - One-two Island Drive (Rev. 2-B) - Worksheet 2026-10-08.xlsm").exists()),
+                None)
+
+
+@unittest.skipUnless(MANDARIN, "Residences at Mandarin sample not on this machine")
+class MandarinFolderBreakoutGoldenTests(unittest.TestCase):
+    """The real zone-breakout job: ZONE BREAKOUT's raw rows on Project Totals, formatted by
+    the tool, against the Project Totals a human finished by hand. Every item the human kept
+    must sit in the same zone section under the same group header. The human also deleted
+    the '00' scale-check rows (circles, page markers), the empty zone rows and the four
+    zero-quantity '(unassigned)' rows; the spec doesn't, so those are left out of the match."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        raw = make_fixture.zone_breakout_as_raw(MANDARIN, Path(cls.tmp.name) / "mandarin.xlsm")
+        cls.out = Path(cls.tmp.name) / "out.xlsm"
+        cls.report = formatter.format_file(raw, cls.out, latin_fixer=None)
+        cls.tool = openpyxl.load_workbook(cls.out)["Project Totals"]
+        cls.human = openpyxl.load_workbook(MANDARIN)["Project Totals"]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    @staticmethod
+    def placements(ws):
+        import collections
+        import re
+        out, section, header = collections.Counter(), None, None
+        for r in range(16, ws.max_row + 1):
+            b = " ".join(str(ws.cell(r, 2).value or "").split())
+            if not b:
+                continue
+            if formatter._empty(ws.cell(r, 6).value):
+                if re.match(r"^(level\b|\(unassigned\)|\d+ - level\b)", b, re.I):
+                    section, header = b, None
+                elif b != "Landscape":
+                    header = b
+            elif section != "(unassigned)" and not re.search(r"Circle|Page Marker", b):
+                out[(section, header, b)] += 1
+        return out
+
+    def test_every_item_sits_under_the_humans_section_and_group(self):
+        self.assertEqual(self.placements(self.tool), self.placements(self.human))
+
+    def test_forty_headers_in_eight_sections_none_red(self):
+        self.assertEqual(len(self.report.folder_inserted), 40)
+        self.assertEqual(len({sec for _, _, sec in self.report.folder_inserted}), 8)
+        self.assertEqual(self.report.groups_flagged, [])
+        self.assertEqual(self.report.conflicts, [])
+
+    def test_table_covers_every_row(self):
+        self.assertEqual(self.tool.tables["LH_materials_list_tbl"].ref, "B15:T611")
+
+
 @unittest.skipUnless(FINISHED_SAMPLE.exists(), f"real sample not on this machine: {FINISHED_SAMPLE}")
 class RealSampleTests(unittest.TestCase):
     """Reverse a finished, human-made Arazoza .xlsm into the raw layout, run the tool, and

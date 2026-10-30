@@ -18,6 +18,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import copy
 import datetime as dt
 
 import openpyxl
@@ -225,3 +226,32 @@ def deformat_finished(src: str | Path, dst: str | Path, sheet: str = "Project To
 if __name__ == "__main__":
     out = build_synthetic_raw(sys.argv[1] if len(sys.argv) > 1 else "arazoza-raw-fixture.xlsx")
     print(f"wrote {out}")
+
+
+def zone_breakout_as_raw(src: str | Path, dst: str | Path) -> Path:
+    """The Residences at Mandarin worksheet as a client would send it: the raw zone-breakout
+    rows (no group headers) on Project Totals, plus the FOLDER BREAKOUT tab. The sample keeps
+    those rows on a ZONE BREAKOUT tab and a hand-finished Project Totals; this copies the
+    first over the second and drops the ZONE BREAKOUT tab (and the names scoped to it)."""
+    wb = openpyxl.load_workbook(src, keep_vba=True)
+    zone, totals = wb["ZONE BREAKOUT"], wb["Project Totals"]
+    data_cols = range(FIRST_COL, FIRST_COL + len(HEADERS))
+    zone_end = zone.max_row
+    for r in range(HEADER_ROW + 1, max(totals.max_row, zone_end) + 1):
+        for c in data_cols:
+            src_cell, dst_cell = zone.cell(r, c), totals.cell(r, c)
+            dst_cell.value = src_cell.value if r <= zone_end else None
+            dst_cell.font = copy.copy(src_cell.font)
+        if r > zone_end:
+            for c in range(FIRST_COL + len(HEADERS), totals.max_column + 1):
+                totals.cell(r, c).value = None
+    table = totals.tables["LH_materials_list_tbl"]
+    table.ref = f"B{HEADER_ROW}:T{zone_end}"
+    if table.autoFilter is not None:
+        table.autoFilter.ref = table.ref
+    for name in list(zone.defined_names):
+        del zone.defined_names[name]
+    wb.remove(zone)
+    dst = Path(dst)
+    wb.save(dst)
+    return dst
